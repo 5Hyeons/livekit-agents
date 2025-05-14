@@ -382,7 +382,7 @@ class Worker(utils.EventEmitter[EventTypes]):
             raise Exception("worker is already running")
 
         logger.info(
-            "starting worker",
+            "starting worker 222",
             extra={"version": __version__, "rtc-version": rtc.__version__},
         )
 

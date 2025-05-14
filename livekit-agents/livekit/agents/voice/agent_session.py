@@ -8,7 +8,7 @@ from typing import Generic, Literal, TypeVar, Union
 
 from livekit import rtc
 
-from .. import debug, llm, stt, tts, utils, vad
+from .. import debug, llm, stt, tts, stf, utils, vad
 from ..cli import cli
 from ..llm import ChatContext
 from ..log import logger
@@ -68,6 +68,7 @@ class AgentSession(rtc.EventEmitter[EventTypes], Generic[Userdata_T]):
         vad: NotGivenOr[vad.VAD] = NOT_GIVEN,
         llm: NotGivenOr[llm.LLM | llm.RealtimeModel] = NOT_GIVEN,
         tts: NotGivenOr[tts.TTS] = NOT_GIVEN,
+        stf: NotGivenOr[stf.STF] = NOT_GIVEN,
         userdata: NotGivenOr[Userdata_T] = NOT_GIVEN,
         allow_interruptions: bool = True,
         discard_audio_if_uninterruptible: bool = True,
@@ -96,6 +97,7 @@ class AgentSession(rtc.EventEmitter[EventTypes], Generic[Userdata_T]):
         self._vad = vad or None
         self._llm = llm or None
         self._tts = tts or None
+        self._stf = stf or None
 
         # configurable IO
         self._input = io.AgentInput(self._on_video_input_changed, self._on_audio_input_changed)
@@ -148,6 +150,10 @@ class AgentSession(rtc.EventEmitter[EventTypes], Generic[Userdata_T]):
     @property
     def tts(self) -> tts.TTS | None:
         return self._tts
+
+    @property
+    def stf(self) -> stf.STF | None:
+        return self._stf
 
     @property
     def vad(self) -> vad.VAD | None:

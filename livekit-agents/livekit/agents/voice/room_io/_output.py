@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 
 from livekit import rtc
 
@@ -14,6 +15,7 @@ from ...types import (
 )
 from .. import io
 from ..transcription import find_micro_track_id
+from ..avatar._animation_datastream_io import ANIMATION_STREAM_TOPIC
 
 
 class _ParticipantAudioOutput(io.AudioOutput):
@@ -372,6 +374,133 @@ class _ParticipantTranscriptionOutput(io.TextOutput):
 
         self._track_id = track.sid
 
+
+class _ParticipantAnimationOutput(io.AnimationDataOutput):
+    """
+    애니메이션 데이터를 브로드캐스트하는 출력 클래스입니다.
+    (수정됨: 스트림을 오랫동안 열어두는 단순화된 버전)
+    """
+
+    def __init__(
+        self,
+        room: rtc.Room,
+        *,
+        participant: rtc.Participant | str | None = None,
+    ):
+        super().__init__(next_in_chain=None)
+        self._room = room
+        self._participant_identity = (
+            participant.identity if isinstance(participant, rtc.Participant) else participant
+        )
+
+        # self._current_stream: asyncio.Task | None = None # No longer needed?
+        # self._pending_frames: list[io.AnimationData] = [] # No longer needed?
+        self._close_task: asyncio.Task | None = None # Task for final close
+        self._stream_writer: rtc.ByteStreamWriter | None = None
+        self._frames_count = 0
+        self._start_time = time.time()
+        self._is_closed = False # Flag to indicate if closed
+
+        # Removed self._segment_id
+
+        logger.info(f"[ANIM_OUTPUT_SIMPLE] 초기화: 대상 참가자={self._participant_identity}")
+
+    # Removed _reset_state method
+
+    async def capture_frame(self, data: io.AnimationData) -> None:
+        """애니메이션 프레임 데이터를 캡처합니다."""
+        writer_id = id(self._stream_writer) if self._stream_writer else "None"
+        # logger.debug(f"[ANIM_OUTPUT_SIMPLE] capture_frame 시작: Writer ID={writer_id}, 데이터 특징 개수={data.num_features}")
+
+        if self._is_closed:
+             logger.warning("[ANIM_OUTPUT_SIMPLE] capture_frame 호출됨, 그러나 이미 닫힘 상태임.")
+             return
+
+        if self._participant_identity is None:
+            logger.warning("[ANIM_OUTPUT_SIMPLE] 대상 참가자가 없어 애니메이션 데이터를 전송할 수 없습니다.")
+            return
+
+        # Removed segment_id logic
+
+        # 스트림 작성자가 없는 경우 생성 (최초 1회)
+        if self._stream_writer is None:
+            stream_id = utils.shortuuid("ANIMATION_")
+            attributes = {
+                "num_features": str(data.num_features),
+                # segment_id is removed
+            }
+            logger.info(f"[ANIM_OUTPUT_SIMPLE] 새 애니메이션 데이터 스트림 생성 시도: 스트림 ID={stream_id}, 대상={self._participant_identity}, 특성 개수={data.num_features}, 속성={attributes}")
+            try:
+                self._stream_writer = await self._room.local_participant.stream_bytes(
+                    name=stream_id,
+                    topic=ANIMATION_STREAM_TOPIC,
+                    destination_identities=[self._participant_identity] if self._participant_identity else None,
+                    attributes=attributes,
+                )
+                self._frames_count = 0
+                self._start_time = time.time()
+                logger.info(f"[ANIM_OUTPUT_SIMPLE] 새 애니메이션 데이터 스트림 생성 성공: 스트림 ID={stream_id}, writer ID={id(self._stream_writer)}")
+            except Exception as e:
+                 logger.error(f"[ANIM_OUTPUT_SIMPLE] 애니메이션 데이터 스트림 생성 실패: {e}", exc_info=True)
+                 self._stream_writer = None # Ensure writer is None if creation failed
+                 return # Stop processing if stream creation failed
+
+        # 애니메이션 데이터 쓰기
+        if self._stream_writer is not None:
+            try:
+                data_size = len(data.data)
+                writer_id = id(self._stream_writer)
+                # logger.debug(f"[ANIM_OUTPUT_SIMPLE] 데이터 쓰기 시도: writer ID={writer_id}, 프레임 번호={self._frames_count + 1}, 데이터 크기={data_size}")
+                await self._stream_writer.write(data.data)
+                self._frames_count += 1
+
+                if self._frames_count % 180 == 0:  # 약 3초분량 로깅
+                    elapsed = time.time() - self._start_time
+                    fps = self._frames_count / elapsed if elapsed > 0 else 0
+                    logger.debug(f"[ANIM_OUTPUT_SIMPLE] 애니메이션 데이터 전송 중: {self._frames_count}개 프레임, 평균 FPS: {fps:.1f}, writer ID={writer_id}")
+
+            except Exception as e:
+                writer_id = id(self._stream_writer) if self._stream_writer else "None"
+                logger.error(f"[ANIM_OUTPUT_SIMPLE] 애니메이션 데이터 전송 오류: writer ID={writer_id}, 오류={e}", exc_info=True)
+                # Consider closing the stream permanently on write error?
+                await self.close() # Attempt to close the stream if write fails
+
+    async def close(self) -> None:
+        """스트림을 명시적으로 닫습니다 (예: 에이전트 종료 시)."""
+        if self._is_closed:
+            logger.debug("[ANIM_OUTPUT_SIMPLE] close 호출됨, 이미 닫힘 상태.")
+            return
+
+        if self._stream_writer is None:
+            logger.debug("[ANIM_OUTPUT_SIMPLE] close 호출됨, 그러나 writer가 없음.")
+            self._is_closed = True
+            return
+
+        self._is_closed = True # Mark as closed immediately
+        writer_to_close = self._stream_writer
+        self._stream_writer = None # Prevent further writes
+        writer_id = id(writer_to_close)
+        frames_count = self._frames_count
+        elapsed = time.time() - self._start_time
+        fps = frames_count / elapsed if elapsed > 0 else 0
+
+        logger.info(f"[ANIM_OUTPUT_SIMPLE] 스트림 닫기 시작 (close 호출): writer ID={writer_id}, 전송된 프레임={frames_count}, FPS={fps:.1f}")
+
+        try:
+            await writer_to_close.aclose()
+            logger.info(f"[ANIM_OUTPUT_SIMPLE] 스트림 닫기 완료 (close 호출): writer ID={writer_id}")
+        except Exception as e:
+            logger.error(f"[ANIM_OUTPUT_SIMPLE] 애니메이션 스트림(ID: {writer_id}) 종료 중 오류 (close 호출): {e}", exc_info=True)
+
+
+    # Removed _close_current_stream method as its logic is integrated into close()
+
+    def flush(self) -> None:
+        """(수정됨) 이 메서드는 더 이상 스트림을 닫지 않습니다."""
+        writer_id = id(self._stream_writer) if self._stream_writer else "None"
+        # logger.debug(f"[ANIM_OUTPUT_SIMPLE] flush 호출됨 (동작 없음): 현재 writer ID={writer_id}")
+        # No operation needed for continuous animation stream in this simplified model
+        pass
 
 # Keep this utility private for now
 class _ParallelTextOutput(io.TextOutput):

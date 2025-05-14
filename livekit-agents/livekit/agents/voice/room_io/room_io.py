@@ -11,7 +11,7 @@ from ... import utils
 from ...log import logger
 from ...types import ATTRIBUTE_AGENT_STATE, NOT_GIVEN, TOPIC_CHAT, NotGivenOr
 from ..events import AgentStateChangedEvent, UserInputTranscribedEvent
-from ..io import AudioInput, AudioOutput, TextOutput, VideoInput
+from ..io import AnimationDataOutput, AudioInput, AudioOutput, TextOutput, VideoInput, VideoOutput
 from ..transcription import TranscriptSynchronizer
 
 if TYPE_CHECKING:
@@ -21,6 +21,7 @@ if TYPE_CHECKING:
 from ._input import _ParticipantAudioInputStream, _ParticipantVideoInputStream
 from ._output import (
     _ParallelTextOutput,
+    _ParticipantAnimationOutput,
     _ParticipantAudioOutput,
     _ParticipantLegacyTranscriptionOutput,
     _ParticipantTranscriptionOutput,
@@ -64,6 +65,8 @@ class RoomInputOptions:
 class RoomOutputOptions:
     transcription_enabled: bool = True
     audio_enabled: bool = True
+    video_enabled: bool = False     # 레거시 비디오 출력 (호환성 유지)
+    animation_enabled: bool = False  # 새로운 애니메이션 데이터 출력
     audio_sample_rate: int = 24000
     audio_num_channels: int = 1
     audio_publish_options: rtc.TrackPublishOptions = field(
@@ -98,6 +101,7 @@ class RoomIO:
         self._user_tr_output: _ParallelTextOutput | None = None
         self._agent_tr_output: _ParallelTextOutput | None = None
         self._tr_synchronizer: TranscriptSynchronizer | None = None
+        self._animation_output: _ParticipantAnimationOutput | None = None
 
         self._participant_available_fut = asyncio.Future[rtc.RemoteParticipant]()
 
@@ -148,6 +152,13 @@ class RoomIO:
                 track_publish_options=self._output_options.audio_publish_options,
             )
 
+        if self._output_options.animation_enabled:
+            self._animation_output = _ParticipantAnimationOutput(
+                self._room,
+                participant=self._participant_identity,
+            )
+            logger.info("애니메이션 데이터 출력 활성화됨")
+
         if self._output_options.transcription_enabled:
             self._user_tr_output = _create_transcription_output(
                 is_delta_stream=False, participant=self._participant_identity
@@ -189,6 +200,10 @@ class RoomIO:
         if self.transcription_output:
             self._agent_session.output.transcription = self.transcription_output
 
+        if self.animation_output:
+            self._agent_session.output.animation = self.animation_output
+            logger.info("에이전트 세션에 애니메이션 출력 설정 완료")
+
         self._agent_session.on("agent_state_changed", self._on_agent_state_changed)
         self._agent_session.on("user_input_transcribed", self._on_user_input_transcribed)
 
@@ -221,6 +236,11 @@ class RoomIO:
             return self._tr_synchronizer.text_output
 
         return self._agent_tr_output
+
+    @property
+    def animation_output(self) -> AnimationDataOutput | None:
+        """애니메이션 데이터 출력"""
+        return self._animation_output
 
     @property
     def audio_input(self) -> AudioInput | None:
@@ -274,6 +294,7 @@ class RoomIO:
         self._update_user_transcription(None)
 
     def _on_participant_connected(self, participant: rtc.RemoteParticipant) -> None:
+        logger.info(f"participant connected: {participant.identity}")
         if self._participant_available_fut.done():
             return
 

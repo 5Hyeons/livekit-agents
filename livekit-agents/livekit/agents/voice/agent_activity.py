@@ -28,11 +28,14 @@ from .generation import (
     _AudioOutput,
     _TextOutput,
     _TTSGenerationData,
+    _STFGenerationData,
     perform_audio_forwarding,
     perform_llm_inference,
     perform_text_forwarding,
+    perform_animation_forwarding,
     perform_tool_executions,
     perform_tts_inference,
+    perform_stf_inference,
     remove_instructions,
     truncate_message,
     update_instructions,
@@ -185,6 +188,10 @@ class AgentActivity(RecognitionHooks):
     @property
     def tts(self) -> tts.TTS | None:
         return self._agent.tts or self._session.tts
+    
+    @property
+    def stf(self) -> stf.STF | None:
+        return self._agent.stf or self._session.stf
 
     @property
     def vad(self) -> vad.VAD | None:
@@ -986,7 +993,7 @@ class AgentActivity(RecognitionHooks):
             except ValueError:
                 logger.exception("failed to update the instructions")
 
-        self._session._update_agent_state("thinking")
+        # self._session._update_agent_state("thinking")
         tasks = []
         llm_task, llm_gen_data = perform_llm_inference(
             node=self._agent.llm_node,
@@ -999,6 +1006,9 @@ class AgentActivity(RecognitionHooks):
 
         tts_task: asyncio.Task | None = None
         tts_gen_data: _TTSGenerationData | None = None
+        stf_task: asyncio.Task | None = None
+        stf_gen_data: _STFGenerationData | None = None
+
         if audio_output is not None:
             tts_task, tts_gen_data = perform_tts_inference(
                 node=self._agent.tts_node,
@@ -1006,6 +1016,21 @@ class AgentActivity(RecognitionHooks):
                 model_settings=model_settings,
             )
             tasks.append(tts_task)
+
+            if self.stf is not None and tts_gen_data is not None:
+                # 오디오 스트림을 복제하여 STF에 전달
+                tts_audio_for_stf, tts_audio_for_output = utils.aio.itertools.tee(tts_gen_data.audio_ch, 2)
+                
+                # STF 처리 (오디오 → 애니메이션 데이터)
+                stf_task, stf_gen_data = perform_stf_inference(
+                    node=self._agent.stf_node,
+                    input=tts_audio_for_stf,
+                    model_settings=model_settings,
+                )
+                tasks.append(stf_task)
+                
+                # 오디오 출력용 스트림 업데이트
+                tts_gen_data.audio_ch = tts_audio_for_output
 
         await speech_handle.wait_if_not_interrupted(
             [asyncio.ensure_future(speech_handle._wait_for_authorization())]
@@ -1034,6 +1059,14 @@ class AgentActivity(RecognitionHooks):
             tasks.append(forward_task)
 
             audio_out.first_frame_fut.add_done_callback(_on_first_frame)
+
+            # 애니메이션 데이터 출력 처리
+            if self._session.output.animation is not None and stf_gen_data is not None:
+                forward_anim_task, anim_out = perform_animation_forwarding(
+                    animation_output=self._session.output.animation,
+                    stf_output=stf_gen_data.anim_ch
+                )
+                tasks.append(forward_anim_task)
         else:
             text_out.first_text_fut.add_done_callback(_on_first_frame)
 
@@ -1311,12 +1344,35 @@ class AgentActivity(RecognitionHooks):
                             )
                             forward_tasks.append(forward_task)
                             audio_out.first_frame_fut.add_done_callback(_on_first_frame)
+
+                            # STF 애니메이션 처리
+                            if self.stf is not None:
+                                audio_for_stf, audio_for_output = utils.aio.itertools.tee(realtime_audio, 2)
+                                
+                                # STF 처리
+                                stf_task, stf_gen_data = perform_stf_inference(
+                                    node=self._agent.stf_node,
+                                    input=audio_for_stf,
+                                    model_settings=model_settings,
+                                )
+                                forward_tasks.append(stf_task)
+                                
+                                # 애니메이션 데이터 출력
+                                if self._session.output.animation is not None:
+                                    forward_anim_task, anim_out = perform_animation_forwarding(
+                                        animation_output=self._session.output.animation,
+                                        stf_output=stf_gen_data.anim_ch
+                                    )
+                                    forward_tasks.append(forward_anim_task)
                     else:
                         text_out.first_text_fut.add_done_callback(_on_first_frame)
 
                     outputs.append((msg.message_id, text_out, audio_out))
 
                 await asyncio.gather(*forward_tasks)
+
+            except Exception as e:
+                logger.exception("Error reading messages", extra={"error": str(e)})
             finally:
                 await utils.aio.cancel_and_wait(*forward_tasks)
 

@@ -140,6 +140,9 @@ class _ParticipantInputStream(Generic[T], ABC):
             self._participant_identity != participant.identity
             or publication.source != self._track_source
         ):
+            logger.info(f"track not available: {track}")
+            logger.info(f"participant identity: {self._participant_identity}, {participant.identity}")
+            logger.info(f"track source: {publication.source}, {self._track_source}")
             return
 
         self._close_stream()
@@ -147,6 +150,9 @@ class _ParticipantInputStream(Generic[T], ABC):
         self._forward_atask = asyncio.create_task(
             self._forward_task(self._forward_atask, self._stream)
         )
+        logger.info(f"track available: {track}")
+        logger.info(f"participant identity: {self._participant_identity}, {participant.identity}")
+        logger.info(f"track source: {publication.source}, {self._track_source}")
 
 
 class _ParticipantAudioInputStream(_ParticipantInputStream[rtc.AudioFrame], AudioInput):
@@ -160,10 +166,12 @@ class _ParticipantAudioInputStream(_ParticipantInputStream[rtc.AudioFrame], Audi
     ) -> None:
         _ParticipantInputStream.__init__(
             self, room=room, track_source=rtc.TrackSource.SOURCE_MICROPHONE
+            # self, room=room, track_source=rtc.TrackSource.SOURCE_UNKNOWN
         )
         self._sample_rate = sample_rate
         self._num_channels = num_channels
         self._noise_cancellation = noise_cancellation
+        logger.info(f"audio input initialized: {self._sample_rate}, {self._num_channels}, {self._noise_cancellation}")
 
     @override
     def _create_stream(self, track: rtc.Track) -> rtc.AudioStream:

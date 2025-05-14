@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 from livekit import rtc
 
-from .. import llm, stt, tokenize, tts, utils, vad
+from .. import llm, stt, tokenize, tts, stf, utils, vad
 from ..llm import ChatContext, FunctionTool, ToolError, find_function_tools
 from ..llm.chat_context import _ReadOnlyChatContext
 from ..log import logger
@@ -36,6 +36,7 @@ class Agent:
         vad: NotGivenOr[vad.VAD | None] = NOT_GIVEN,
         llm: NotGivenOr[llm.LLM | llm.RealtimeModel | None] = NOT_GIVEN,
         tts: NotGivenOr[tts.TTS | None] = NOT_GIVEN,
+        stf: NotGivenOr[stf.STF | None] = NOT_GIVEN,
         allow_interruptions: NotGivenOr[bool] = NOT_GIVEN,
     ) -> None:
         tools = tools or []
@@ -46,6 +47,7 @@ class Agent:
         self._stt = stt
         self._llm = llm
         self._tts = tts
+        self._stf = stf
         self._vad = vad
         self._allow_interruptions = allow_interruptions
         self._activity: AgentActivity | None = None
@@ -191,6 +193,19 @@ class Agent:
             NotGivenOr[tts.TTS | None]: An optional TTS component for generating audio output.
         """  # noqa: E501
         return self._tts
+    
+    @property
+    def stf(self) -> NotGivenOr[stf.STF | None]:
+        """
+        Retrieves the Speech-To-Face component for the agent.
+
+        If this property was not set at Agent creation, but an ``AgentSession`` provides an STF component,
+        the session's STF will be used at runtime instead.
+
+        Returns:
+            NotGivenOr[stf.STF | None]: An optional STF component for generating facial animations.
+        """  # noqa: E501
+        return self._stf
 
     @property
     def vad(self) -> NotGivenOr[vad.VAD | None]:
@@ -370,6 +385,23 @@ class Agent:
             rtc.AudioFrame: Audio frames synthesized from the provided text.
         """
         return Agent.default.tts_node(self, text, model_settings)
+    
+    def stf_node(
+        self, audio: AsyncIterable[rtc.AudioFrame], model_settings: ModelSettings
+    ) -> AsyncIterable[stf.AnimationData] | Coroutine[Any, Any, AsyncIterable[stf.AnimationData]] | Coroutine[Any, Any, None]:
+        """
+        오디오에서 얼굴 애니메이션 데이터를 생성하는 파이프라인의 노드입니다.
+
+        기본적으로 이 노드는 제공된 오디오에서 STF를 사용하여 얼굴 애니메이션 데이터를 생성합니다.
+
+        Args:
+            audio (AsyncIterable[rtc.AudioFrame]): 오디오 프레임의 비동기 스트림.
+            model_settings (ModelSettings): 모델 실행을 위한 구성 및 매개변수.
+
+        Yields:
+            stf.AnimationData: 얼굴 애니메이션 블렌드쉐입 데이터.
+        """
+        return Agent.default.stf_node(self, audio, model_settings)
 
     def realtime_audio_output_node(
         self, audio: AsyncIterable[rtc.AudioFrame], model_settings: ModelSettings
@@ -473,6 +505,36 @@ class Agent:
                     async for ev in stream:
                         yield ev.frame
                 finally:
+                    await utils.aio.cancel_and_wait(forward_task)
+
+        @staticmethod
+        async def stf_node(
+            agent: Agent, audio: AsyncIterable[rtc.AudioFrame], model_settings: ModelSettings
+        ) -> AsyncGenerator[stf.AnimationData, None]:
+            """STF 노드의 기본 구현"""
+            activity = agent._get_activity_or_raise()
+            assert activity.stf is not None, "stf_node called but no STF node is available"
+
+            # STF 스트림 생성 및 오디오 프레임 전달
+            async with activity.stf.stream() as stream:
+                
+                @utils.log_exceptions(logger=logger)
+                async def _forward_input():
+                    async for frame in audio:
+                        stream.push_frame(frame)
+                    
+                    # 입력 종료 표시
+                    stream.end_input()
+                
+                # 오디오 전달 태스크 시작
+                forward_task = asyncio.create_task(_forward_input())
+                
+                try:
+                    # 생성된 애니메이션 데이터 반환 (이전에는 비디오 프레임이었음)
+                    async for anim_data in stream:
+                        yield anim_data
+                finally:
+                    # 종료 시 리소스 정리
                     await utils.aio.cancel_and_wait(forward_task)
 
         @staticmethod

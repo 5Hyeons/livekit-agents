@@ -4,32 +4,34 @@ import asyncio
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterable, AsyncIterator, Awaitable
 from dataclasses import dataclass
-from typing import Callable, Literal, Optional, Union
+from typing import Callable, Literal, Optional, Union, TYPE_CHECKING
 
 from livekit import rtc
 
 from .. import llm, stt
 from ..log import logger
 from ..types import NOT_GIVEN, NotGivenOr
-from .agent import ModelSettings
+
+if TYPE_CHECKING:
+    from .agent import ModelSettings
 
 # TODO(theomonnom): can those types be simplified?
 STTNode = Callable[
-    [AsyncIterable[rtc.AudioFrame], ModelSettings],
+    [AsyncIterable[rtc.AudioFrame], "ModelSettings"],
     Union[
         Optional[Union[AsyncIterable[stt.SpeechEvent], AsyncIterable[str]]],
         Awaitable[Optional[Union[AsyncIterable[stt.SpeechEvent], AsyncIterable[str]]]],
     ],
 ]
 LLMNode = Callable[
-    [llm.ChatContext, list[llm.FunctionTool], ModelSettings],
+    [llm.ChatContext, list[llm.FunctionTool], "ModelSettings"],
     Union[
         Optional[Union[AsyncIterable[llm.ChatChunk], AsyncIterable[str], str]],
         Awaitable[Optional[Union[AsyncIterable[llm.ChatChunk], AsyncIterable[str], str]]],
     ],
 ]
 TTSNode = Callable[
-    [AsyncIterable[str], ModelSettings],
+    [AsyncIterable[str], "ModelSettings"],
     Union[
         Optional[AsyncIterable[rtc.AudioFrame]],
         Awaitable[Optional[AsyncIterable[rtc.AudioFrame]]],
@@ -221,6 +223,53 @@ class VideoOutput(ABC):
             self._next_in_chain.on_detached()
 
 
+# AnimationData는 STF 블렌드쉐입 데이터로, NumPy 배열을 직렬화해서 전송하기 위한 래퍼 클래스입니다.
+class AnimationData:
+    """애니메이션 데이터 클래스 - 얼굴 블렌드쉐입 데이터를 나타냅니다."""
+    
+    def __init__(self, data: bytes, num_features: int = 52, timestamp_us: int = 0, segment_id: str = "") -> None:
+        self.data = data  # 직렬화된 블렌드쉐입 데이터
+        self.num_features = num_features  # 블렌드쉐입 특성의 개수
+        self.timestamp_us = timestamp_us  # 마이크로초 단위의 타임스탬프
+        self.segment_id = segment_id  # 세그먼트 ID
+    
+    @classmethod
+    def from_numpy(cls, arr, timestamp_us: int = 0, segment_id: str = ""):
+        """NumPy 배열에서 AnimationData 객체 생성"""
+        import numpy as np
+        # NumPy 배열을 직렬화
+        data = np.array(arr, dtype=np.float32).tobytes()
+        return cls(data=data, num_features=len(arr), timestamp_us=timestamp_us, segment_id=segment_id)
+
+
+# AnimationDataOutput은 RTF에서 생성된 블렌드쉐입 애니메이션 데이터를 처리하기 위한 인터페이스입니다.
+class AnimationDataOutput(ABC):
+    """STF(Speech-To-Face)에서 생성된 애니메이션 데이터를 처리하는 추상 클래스입니다."""
+    
+    def __init__(self, *, next_in_chain: 'AnimationDataOutput' | None = None) -> None:
+        self._next_in_chain = next_in_chain
+    
+    @abstractmethod
+    async def capture_frame(self, data: AnimationData) -> None:
+        """애니메이션 프레임 데이터를 캡처합니다."""
+        pass
+    
+    @abstractmethod
+    def flush(self) -> None:
+        """현재 데이터 스트림을 플러시합니다."""
+        pass
+    
+    def on_attached(self) -> None:
+        """출력이 연결될 때 호출됩니다."""
+        if self._next_in_chain:
+            self._next_in_chain.on_attached()
+    
+    def on_detached(self) -> None:
+        """출력이 분리될 때 호출됩니다."""
+        if self._next_in_chain:
+            self._next_in_chain.on_detached()
+
+
 class AgentInput:
     def __init__(self, video_changed: Callable, audio_changed: Callable) -> None:
         self._video_stream: VideoInput | None = None
@@ -293,17 +342,21 @@ class AgentOutput:
         video_changed: Callable,
         audio_changed: Callable,
         transcription_changed: Callable,
+        animation_changed: Callable = lambda: None,  # 기본값으로 빈 콜백 추가
     ) -> None:
         self._video_sink: VideoOutput | None = None
         self._audio_sink: AudioOutput | None = None
         self._transcription_sink: TextOutput | None = None
+        self._animation_sink: AnimationDataOutput | None = None
         self._video_changed = video_changed
         self._audio_changed = audio_changed
         self._transcription_changed = transcription_changed
+        self._animation_changed = animation_changed
 
         self._audio_enabled = True
         self._video_enabled = True
         self._transcription_enabled = True
+        self._animation_enabled = True
 
     def set_video_enabled(self, enabled: bool):
         if enabled == self._video_enabled:
@@ -347,6 +400,21 @@ class AgentOutput:
         else:
             self._transcription_sink.on_detached()
 
+    def set_animation_enabled(self, enabled: bool):
+        """애니메이션 데이터 출력 활성화/비활성화"""
+        if enabled == self._animation_enabled:
+            return
+
+        self._animation_enabled = enabled
+
+        if not self._animation_sink:
+            return
+
+        if enabled:
+            self._animation_sink.on_attached()
+        else:
+            self._animation_sink.on_detached()
+
     @property
     def audio_enabled(self) -> bool:
         return self._audio_enabled
@@ -358,6 +426,11 @@ class AgentOutput:
     @property
     def transcription_enabled(self) -> bool:
         return self._transcription_enabled
+
+    @property
+    def animation_enabled(self) -> bool:
+        """애니메이션 데이터 출력 활성화 상태"""
+        return self._animation_enabled
 
     @property
     def video(self) -> VideoOutput | None:
@@ -403,3 +476,23 @@ class AgentOutput:
 
         if self._transcription_sink:
             self._transcription_sink.on_attached()
+
+    @property
+    def animation(self) -> AnimationDataOutput | None:
+        """애니메이션 데이터 출력 싱크"""
+        return self._animation_sink
+
+    @animation.setter
+    def animation(self, sink: AnimationDataOutput | None) -> None:
+        """애니메이션 데이터 출력 싱크 설정"""
+        if sink is self._animation_sink:
+            return
+
+        if self._animation_sink:
+            self._animation_sink.on_detached()
+
+        self._animation_sink = sink
+        self._animation_changed()
+
+        if self._animation_sink:
+            self._animation_sink.on_attached()
