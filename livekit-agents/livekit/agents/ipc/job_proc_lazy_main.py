@@ -21,7 +21,6 @@ if current_process().name == "job_proc":
 import asyncio
 import contextlib
 import socket
-import threading
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -74,16 +73,10 @@ def proc_main(args: ProcStartArgs) -> None:
     )
 
     client.initialize_logger()
-
-    pid = current_process().pid
-    logger.info("initializing job process", extra={"pid": pid})
     try:
         client.initialize()
     except Exception:
-        return  # initialization failed, exit
-
-    logger.info("job process initialized", extra={"pid": pid})
-
+        return  # initialization failed, exit (initialize will send an error to the worker)
     client.run()
 
 
@@ -189,6 +182,7 @@ class _JobProc:
                         return
 
                     try:
+                        job_ctx_token = _JobContextVar.set(self._job_ctx)
                         tracing_tasks = []
                         for callback in self._job_ctx._tracing_callbacks:
                             tracing_tasks.append(
@@ -196,6 +190,7 @@ class _JobProc:
                             )
 
                         await asyncio.gather(*tracing_tasks)
+                        _JobContextVar.reset(job_ctx_token)
                     except Exception:
                         logger.exception("error while exeuting tracing tasks")
 
@@ -334,8 +329,6 @@ def thread_main(
     args: ThreadStartArgs,
 ) -> None:
     """main function for the job process when using the ThreadedJobRunner"""
-    tid = threading.get_native_id()
-
     try:
         from .proc_client import _ProcClient
 
@@ -353,10 +346,7 @@ def thread_main(
             job_proc.entrypoint,
         )
 
-        logger.info("initializing job runner", extra={"tid": tid})
         client.initialize()
-        logger.info("job runner initialized", extra={"tid": tid})
-
         client.run()
     finally:
         args.join_fnc()

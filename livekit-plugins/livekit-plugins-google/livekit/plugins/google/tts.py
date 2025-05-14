@@ -56,6 +56,7 @@ class TTS(tts.TTS):
         effects_profile_id: str = "",
         speaking_rate: float = 1.0,
         location: str = "global",
+        audio_encoding: texttospeech.AudioEncoding = texttospeech.AudioEncoding.PCM,
         credentials_info: NotGivenOr[dict] = NOT_GIVEN,
         credentials_file: NotGivenOr[str] = NOT_GIVEN,
     ) -> None:
@@ -105,7 +106,7 @@ class TTS(tts.TTS):
         self._opts = _TTSOptions(
             voice=voice_params,
             audio_config=texttospeech.AudioConfig(
-                audio_encoding=texttospeech.AudioEncoding.OGG_OPUS,
+                audio_encoding=audio_encoding,
                 sample_rate_hertz=sample_rate,
                 pitch=pitch,
                 effects_profile_id=effects_profile_id,
@@ -132,11 +133,11 @@ class TTS(tts.TTS):
         """  # noqa: E501
         params = {}
         if is_given(language):
-            params["language"] = language
+            params["language_code"] = str(language)
         if is_given(gender):
-            params["gender"] = gender
+            params["ssml_gender"] = _gender_from_str(str(gender))
         if is_given(voice_name):
-            params["voice_name"] = voice_name
+            params["name"] = voice_name
 
         if params:
             self._opts.voice = texttospeech.VoiceSelectionParams(**params)

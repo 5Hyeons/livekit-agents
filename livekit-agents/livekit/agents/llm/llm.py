@@ -10,9 +10,9 @@ from typing import Any, Generic, Literal, TypeVar, Union
 from pydantic import BaseModel, ConfigDict, Field
 
 from livekit import rtc
-from livekit.agents._exceptions import APIConnectionError, APIError
 
 from .. import utils
+from .._exceptions import APIConnectionError, APIError
 from ..log import logger
 from ..metrics import LLMMetrics
 from ..types import (
@@ -59,7 +59,7 @@ class LLMError(BaseModel):
     type: Literal["llm_error"] = "llm_error"
     timestamp: float
     label: str
-    error: APIError = Field(..., exclude=True)
+    error: Exception = Field(..., exclude=True)
     recoverable: bool
 
 
@@ -161,7 +161,11 @@ class LLMStream(ABC):
                 # Reset the flag when retrying
                 self._current_attempt_has_error = False
 
-    def _emit_error(self, api_error: APIError, recoverable: bool):
+            except Exception as e:
+                self._emit_error(e, recoverable=False)
+                raise
+
+    def _emit_error(self, api_error: Exception, recoverable: bool):
         self._current_attempt_has_error = True
         self._llm.emit(
             "error",
@@ -225,7 +229,7 @@ class LLMStream(ABC):
             val = await self._event_aiter.__anext__()
         except StopAsyncIteration:
             if not self._task.cancelled() and (exc := self._task.exception()):
-                raise exc
+                raise exc  # noqa: B904
 
             raise StopAsyncIteration from None
 
@@ -244,3 +248,17 @@ class LLMStream(ABC):
         exc_tb: TracebackType | None,
     ) -> None:
         await self.aclose()
+
+    def to_str_iterable(self) -> AsyncIterable[str]:
+        """
+        Convert the LLMStream to an async iterable of strings.
+        This assumes the stream will not call any tools.
+        """
+
+        async def _iterable():
+            async with self:
+                async for chunk in self:
+                    if chunk.delta and chunk.delta.content:
+                        yield chunk.delta.content
+
+        return _iterable()

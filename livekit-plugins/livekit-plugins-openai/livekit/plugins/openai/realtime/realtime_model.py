@@ -17,6 +17,12 @@ from pydantic import BaseModel, ValidationError
 
 from livekit import rtc
 from livekit.agents import APIConnectionError, APIError, io, llm, utils
+from livekit.agents.llm.tool_context import (
+    get_raw_function_info,
+    is_function_tool,
+    is_raw_function_tool,
+)
+from livekit.agents.metrics import RealtimeModelMetrics
 from livekit.agents.types import NOT_GIVEN, NotGivenOr
 from livekit.agents.utils import is_given
 from openai.types.beta.realtime import (
@@ -41,12 +47,12 @@ from openai.types.beta.realtime import (
     ResponseAudioTranscriptDoneEvent,
     ResponseCancelEvent,
     ResponseContentPartAddedEvent,
+    ResponseContentPartDoneEvent,
     ResponseCreatedEvent,
     ResponseCreateEvent,
     ResponseDoneEvent,
     ResponseOutputItemAddedEvent,
     ResponseOutputItemDoneEvent,
-    ResponseTextDeltaEvent,
     SessionUpdateEvent,
     session_update_event,
 )
@@ -73,7 +79,7 @@ SAMPLE_RATE = 24000
 NUM_CHANNELS = 1
 OPENAI_BASE_URL = "https://api.openai.com/v1"
 
-_log_oai_events = int(os.getenv("LOG_OAI_EVENTS", 0))
+lk_oai_debug = int(os.getenv("LK_OPENAI_DEBUG", 0))
 
 
 @dataclass
@@ -106,12 +112,39 @@ class _ResponseGeneration:
 
     messages: dict[str, _MessageGeneration]
 
+    _created_timestamp: float
+    """timestamp when the response was created"""
+    _first_token_timestamp: float | None = None
+    """timestamp when the first token was received"""
+
+
+@dataclass
+class _CreateResponseHandle:
+    instructions: NotGivenOr[str]
+    done_fut: asyncio.Future[llm.GenerationCreatedEvent]
+    timeout: asyncio.TimerHandle | None = None
+
+    def timeout_start(self) -> None:
+        if self.timeout or self.done_fut is None or self.done_fut.done():
+            return
+
+        def _on_timeout() -> None:
+            if not self.done_fut.done():
+                self.done_fut.set_exception(llm.RealtimeError("generate_reply timed out."))
+
+        self.timeout = asyncio.get_event_loop().call_later(5.0, _on_timeout)
+        self.done_fut.add_done_callback(lambda _: self.timeout.cancel())
+
+
+_MOCK_AUDIO_ID_PREFIX = "lk_mock_audio_item_"
 
 # default values got from a "default" session from their API
 DEFAULT_TEMPERATURE = 0.8
 DEFAULT_TURN_DETECTION = TurnDetection(
-    type="semantic_vad",
-    eagerness="auto",
+    type="server_vad",
+    threshold=0.5,
+    prefix_padding_ms=300,
+    silence_duration_ms=200,
     create_response=True,
     interrupt_response=True,
 )
@@ -119,6 +152,18 @@ DEFAULT_INPUT_AUDIO_TRANSCRIPTION = InputAudioTranscription(
     model="gpt-4o-mini-transcribe",
 )
 DEFAULT_TOOL_CHOICE = "auto"
+
+AZURE_DEFAULT_TURN_DETECTION = TurnDetection(
+    type="server_vad",
+    threshold=0.5,
+    prefix_padding_ms=300,
+    silence_duration_ms=200,
+    create_response=True,
+)
+
+AZURE_DEFAULT_INPUT_AUDIO_TRANSCRIPTION = InputAudioTranscription(
+    model="whisper-1",
+)
 
 
 class RealtimeModel(llm.RealtimeModel):
@@ -175,6 +220,7 @@ class RealtimeModel(llm.RealtimeModel):
                 message_truncation=True,
                 turn_detection=turn_detection is not None,
                 user_transcription=input_audio_transcription is not None,
+                auto_tool_reply_generation=False,
             )
         )
 
@@ -286,6 +332,12 @@ class RealtimeModel(llm.RealtimeModel):
             base_url = f"{azure_endpoint.rstrip('/')}/openai"
         elif azure_endpoint is not None:
             raise ValueError("base_url and azure_endpoint are mutually exclusive")
+
+        if not is_given(input_audio_transcription):
+            input_audio_transcription = AZURE_DEFAULT_INPUT_AUDIO_TRANSCRIPTION
+
+        if not is_given(turn_detection):
+            turn_detection = AZURE_DEFAULT_TURN_DETECTION
 
         return cls(
             voice=voice,
@@ -401,7 +453,10 @@ class RealtimeSession(
         self._main_atask = asyncio.create_task(self._main_task(), name="RealtimeSession._main_task")
         self._initial_session_update()
 
-        self._response_created_futures: dict[str, asyncio.Future[llm.GenerationCreatedEvent]] = {}
+        self._response_created_futures: dict[str, _CreateResponseHandle] = {}
+        self._text_mode_recovery_atask: asyncio.Task | None = None
+        self._text_mode_recovery_retries: int = 0
+
         self._item_delete_future: dict[str, asyncio.Future] = {}
         self._item_create_future: dict[str, asyncio.Future] = {}
 
@@ -442,7 +497,7 @@ class RealtimeSession(
             azure_deployment=self._realtime_model._opts.azure_deployment,
         )
 
-        if _log_oai_events:
+        if lk_oai_debug:
             logger.debug(f"connecting to Realtime API: {url}")
 
         ws_conn = await self._realtime_model._ensure_http_session().ws_connect(
@@ -464,7 +519,7 @@ class RealtimeSession(
                     self.emit("openai_client_event_queued", msg)
                     await ws_conn.send_str(json.dumps(msg))
 
-                    if _log_oai_events:
+                    if lk_oai_debug:
                         msg_copy = msg.copy()
                         if msg_copy["type"] == "input_audio_buffer.append":
                             msg_copy = {**msg_copy, "audio": "..."}
@@ -507,7 +562,7 @@ class RealtimeSession(
                 self.emit("openai_server_event_received", event)
 
                 try:
-                    if _log_oai_events:
+                    if lk_oai_debug:
                         event_copy = event.copy()
                         if event_copy["type"] == "response.audio.delta":
                             event_copy = {**event_copy, "delta": "..."}
@@ -548,8 +603,10 @@ class RealtimeSession(
                         self._handle_response_content_part_added(
                             ResponseContentPartAddedEvent.construct(**event)
                         )
-                    elif event["type"] == "response.text.delta":
-                        self._handle_response_text_delta(ResponseTextDeltaEvent.construct(**event))
+                    elif event["type"] == "response.content_part.done":
+                        self._handle_response_content_part_done(
+                            ResponseContentPartDoneEvent.construct(**event)
+                        )
                     elif event["type"] == "response.audio_transcript.delta":
                         self._handle_response_audio_transcript_delta(event)
                     elif event["type"] == "response.audio.delta":
@@ -571,6 +628,8 @@ class RealtimeSession(
                     elif event["type"] == "error":
                         self._handle_error(ErrorEvent.construct(**event))
                 except Exception:
+                    if event["type"] == "response.audio.delta":
+                        event["delta"] = event["delta"][:10] + "..."
                     logger.exception("failed to handle event", extra={"event": event})
 
         tasks = [
@@ -675,7 +734,18 @@ class RealtimeSession(
                 )
             )
 
-    async def update_chat_ctx(self, chat_ctx: llm.ChatContext) -> None:
+    async def update_chat_ctx(
+        self, chat_ctx: llm.ChatContext, *, _add_mock_audio: bool = False
+    ) -> None:
+        chat_ctx = chat_ctx.copy()
+        if _add_mock_audio:
+            chat_ctx.items.append(_create_mock_audio_item())
+        else:
+            # clean up existing mock audio items
+            chat_ctx.items[:] = [
+                item for item in chat_ctx.items if not item.id.startswith(_MOCK_AUDIO_ID_PREFIX)
+            ]
+
         async with self._update_chat_ctx_lock:
             diff_ops = llm.utils.compute_chat_ctx_diff(
                 self._remote_chat_ctx.to_chat_ctx(), chat_ctx
@@ -716,13 +786,24 @@ class RealtimeSession(
             except asyncio.TimeoutError:
                 raise llm.RealtimeError("update_chat_ctx timed out.") from None
 
-    async def update_tools(self, tools: list[llm.FunctionTool]) -> None:
+    async def update_tools(self, tools: list[llm.FunctionTool | llm.RawFunctionTool]) -> None:
         async with self._update_fnc_ctx_lock:
             oai_tools: list[session_update_event.SessionTool] = []
-            retained_tools: list[llm.FunctionTool] = []
+            retained_tools: list[llm.FunctionTool | llm.RawFunctionTool] = []
 
             for tool in tools:
-                tool_desc = llm.utils.build_legacy_openai_schema(tool, internally_tagged=True)
+                if is_function_tool(tool):
+                    tool_desc = llm.utils.build_legacy_openai_schema(tool, internally_tagged=True)
+                elif is_raw_function_tool(tool):
+                    tool_info = get_raw_function_info(tool)
+                    tool_desc = tool_info.raw_schema
+                    tool_desc["type"] = "function"  # internally tagged
+                else:
+                    logger.error(
+                        "OpenAI Realtime API doesn't support this tool type", extra={"tool": tool}
+                    )
+                    continue
+
                 try:
                     session_tool = session_update_event.SessionTool.model_validate(tool_desc)
                     oai_tools.append(session_tool)
@@ -789,27 +870,9 @@ class RealtimeSession(
     def generate_reply(
         self, *, instructions: NotGivenOr[str] = NOT_GIVEN
     ) -> asyncio.Future[llm.GenerationCreatedEvent]:
-        event_id = utils.shortuuid("response_create_")
-        fut = asyncio.Future()
-        self._response_created_futures[event_id] = fut
-        self.send_event(
-            ResponseCreateEvent(
-                type="response.create",
-                event_id=event_id,
-                response=Response(
-                    instructions=instructions or None,
-                    metadata={"client_event_id": event_id},
-                ),
-            )
-        )
-
-        def _on_timeout() -> None:
-            if fut and not fut.done():
-                fut.set_exception(llm.RealtimeError("generate_reply timed out."))
-
-        handle = asyncio.get_event_loop().call_later(5.0, _on_timeout)
-        fut.add_done_callback(lambda _: handle.cancel())
-        return fut
+        handle = self._create_response(instructions=instructions, user_initiated=True)
+        self._text_mode_recovery_retries = 0  # reset the counter
+        return handle.done_fut
 
     def interrupt(self) -> None:
         self.send_event(ResponseCancelEvent(type="response.cancel"))
@@ -849,6 +912,57 @@ class RealtimeSession(
         else:
             yield frame
 
+    def _create_response(
+        self,
+        *,
+        user_initiated: bool,
+        instructions: NotGivenOr[str] = NOT_GIVEN,
+        old_handle: _CreateResponseHandle | None = None,
+    ) -> _CreateResponseHandle:
+        handle = old_handle or _CreateResponseHandle(
+            instructions=instructions, done_fut=asyncio.Future()
+        )
+        if old_handle and utils.is_given(instructions):
+            handle.instructions = instructions
+
+        event_id = utils.shortuuid("response_create_")
+        if user_initiated:
+            self._response_created_futures[event_id] = handle
+
+        self.send_event(
+            ResponseCreateEvent(
+                type="response.create",
+                event_id=event_id,
+                response=Response(
+                    instructions=handle.instructions or None,
+                    metadata={"client_event_id": event_id} if user_initiated else None,
+                ),
+            )
+        )
+        if user_initiated:
+            handle.timeout_start()
+        return handle
+
+    def _emit_generation_event(self, response_id: str) -> None:
+        # called when the generation is a function call or a audio message
+        generation_ev = llm.GenerationCreatedEvent(
+            message_stream=self._current_generation.message_ch,
+            function_stream=self._current_generation.function_ch,
+            user_initiated=False,
+        )
+
+        if handle := self._response_created_futures.pop(response_id, None):
+            generation_ev.user_initiated = True
+            try:
+                handle.done_fut.set_result(generation_ev)
+            except asyncio.InvalidStateError:
+                # in case the generation comes after the reply timeout
+                logger.warning(
+                    "response received after timeout", extra={"response_id": response_id}
+                )
+
+        self.emit("generation_created", generation_ev)
+
     def _handle_input_audio_buffer_speech_started(
         self, _: InputAudioBufferSpeechStartedEvent
     ) -> None:
@@ -872,30 +986,47 @@ class RealtimeSession(
             message_ch=utils.aio.Chan(),
             function_ch=utils.aio.Chan(),
             messages={},
-        )
-
-        generation_ev = llm.GenerationCreatedEvent(
-            message_stream=self._current_generation.message_ch,
-            function_stream=self._current_generation.function_ch,
-            user_initiated=False,
+            _created_timestamp=time.time(),
         )
 
         if (
             isinstance(event.response.metadata, dict)
             and (client_event_id := event.response.metadata.get("client_event_id"))
-            and (fut := self._response_created_futures.pop(client_event_id, None))
+            and (handle := self._response_created_futures.pop(client_event_id, None))
         ):
-            generation_ev.user_initiated = True
-            fut.set_result(generation_ev)
+            # set key to the response id
+            self._response_created_futures[event.response.id] = handle
 
-        self.emit("generation_created", generation_ev)
+        # the generation_created event is emitted when
+        # 1. the response is not a message on response.output_item.added event
+        # 2. the content is audio on response.content_part.added event
+        # will try to recover from text response on response.content_part.done event
 
     def _handle_response_output_item_added(self, event: ResponseOutputItemAddedEvent) -> None:
         assert self._current_generation is not None, "current_generation is None"
-        assert (item_id := event.item.id) is not None, "item.id is None"
         assert (item_type := event.item.type) is not None, "item.type is None"
+        assert (response_id := event.response_id) is not None, "response_id is None"
 
-        if item_type == "message":
+        if item_type != "message":
+            # emit immediately if it's not a message, otherwise wait response.content_part.added
+            self._emit_generation_event(response_id)
+            self._text_mode_recovery_retries = 0
+
+    def _handle_response_content_part_added(self, event: ResponseContentPartAddedEvent) -> None:
+        assert self._current_generation is not None, "current_generation is None"
+        assert (item_id := event.item_id) is not None, "item_id is None"
+        assert (item_type := event.part.type) is not None, "part.type is None"
+        assert (response_id := event.response_id) is not None, "response_id is None"
+
+        if item_type == "audio":
+            self._emit_generation_event(response_id)
+            if self._text_mode_recovery_retries > 0:
+                logger.info(
+                    "recovered from text-only response",
+                    extra={"retried_times": self._text_mode_recovery_retries},
+                )
+                self._text_mode_recovery_retries = 0
+
             item_generation = _MessageGeneration(
                 message_id=item_id,
                 text_ch=utils.aio.Chan(),
@@ -909,6 +1040,76 @@ class RealtimeSession(
                 )
             )
             self._current_generation.messages[item_id] = item_generation
+            self._current_generation._first_token_timestamp = time.time()
+        else:
+            self.interrupt()
+            if self._text_mode_recovery_retries == 0:
+                logger.warning("received text-only response from realtime API")
+
+    def _handle_response_content_part_done(self, event: ResponseContentPartDoneEvent) -> None:
+        if event.part.type != "text":
+            return
+
+        # try to recover from text-only response on response.content_part_done event
+        assert self._current_generation is not None, "current_generation is None"
+        assert (item_id := event.item_id) is not None, "item_id is None"
+        assert (response_id := event.response_id) is not None, "response_id is None"
+
+        async def _retry_generation(
+            item_id: str, response_handle: _CreateResponseHandle | None
+        ) -> None:
+            """Recover from text-only response to audio mode.
+
+            When chat history is loaded, OpenAI Realtime API may respond with text only.
+            This method recovers by:
+            1. Deleting the text response
+            2. Creating an empty user audio message
+            3. Requesting a new response to trigger audio mode
+            """
+
+            # remove the text item
+            chat_ctx = self.chat_ctx
+            idx = chat_ctx.index_by_id(item_id)
+            if idx is not None:
+                chat_ctx.items.pop(idx)
+            await self.update_chat_ctx(chat_ctx, _add_mock_audio=True)
+
+            if response_handle and response_handle.done_fut.done():
+                if response_handle.done_fut.exception() is not None:
+                    logger.error("generate_reply timed out, cancel recovery")
+                return
+
+            self._create_response(
+                old_handle=response_handle,
+                user_initiated=response_handle is not None,
+            )
+
+        if self._text_mode_recovery_retries >= 5:
+            logger.error(
+                "failed to recover from text-only response",
+                extra={"retried_times": self._text_mode_recovery_retries},
+            )
+            self._text_mode_recovery_retries = 0
+            return
+
+        handle = self._response_created_futures.pop(response_id, None)
+        if handle and handle.done_fut.done():
+            if handle.done_fut.exception() is not None:
+                logger.error("generate_reply timed out, cancel recovery")
+            self._text_mode_recovery_retries = 0
+            return
+
+        self._text_mode_recovery_retries += 1
+        logger.warning(
+            "trying to recover from text-only response",
+            extra={"retries": self._text_mode_recovery_retries},
+        )
+
+        if self._text_mode_recovery_atask and not self._text_mode_recovery_atask.done():
+            self._text_mode_recovery_atask.cancel()
+        self._text_mode_recovery_atask = asyncio.create_task(
+            _retry_generation(item_id=item_id, response_handle=handle)
+        )
 
     def _handle_conversion_item_created(self, event: ConversationItemCreatedEvent) -> None:
         assert event.item.id is not None, "item.id is None"
@@ -947,7 +1148,11 @@ class RealtimeSession(
 
         self.emit(
             "input_audio_transcription_completed",
-            llm.InputTranscriptionCompleted(item_id=event.item_id, transcript=event.transcript),
+            llm.InputTranscriptionCompleted(
+                item_id=event.item_id,
+                transcript=event.transcript,
+                is_final=True,
+            ),
         )
 
     def _handle_conversion_item_input_audio_transcription_failed(
@@ -957,34 +1162,6 @@ class RealtimeSession(
             "OpenAI Realtime API failed to transcribe input audio",
             extra={"error": event.error},
         )
-
-    def _handle_response_content_part_added(self, event: ResponseContentPartAddedEvent) -> None:
-        assert self._current_generation is not None, "current_generation is None"
-
-        if event.part.type == "text":
-            # TODO(long): try to recover to audio mode or raise an error?
-            logger.warning("text-only response received from OpenAI Realtime API")
-            item_id = event.item_id
-            item_generation = self._current_generation.messages[item_id]
-
-            # put a dummy audio frame to send playback finished event
-            data = b"\x00\x00" * int(SAMPLE_RATE * 0.01) * NUM_CHANNELS
-            item_generation.audio_ch.send_nowait(
-                rtc.AudioFrame(
-                    data=data,
-                    sample_rate=SAMPLE_RATE,
-                    num_channels=NUM_CHANNELS,
-                    samples_per_channel=len(data) // 2,
-                )
-            )
-
-    def _handle_response_text_delta(self, event: ResponseTextDeltaEvent) -> None:
-        assert self._current_generation is not None, "current_generation is None"
-
-        item_id = event.item_id
-        delta = event.delta
-        item_generation = self._current_generation.messages[item_id]
-        item_generation.text_ch.send_nowait(delta)
 
     def _handle_response_audio_transcript_delta(self, event: dict) -> None:
         assert self._current_generation is not None, "current_generation is None"
@@ -1036,16 +1213,22 @@ class RealtimeSession(
                     arguments=item.arguments,
                 )
             )
-        elif item_type == "message":
-            item_generation = self._current_generation.messages[item_id]
+        elif item_type == "message" and (
+            item_generation := self._current_generation.messages.get(item_id)
+        ):
+            # text response doesn't have item_generation
             item_generation.text_ch.close()
             item_generation.audio_ch.close()
 
-    def _handle_response_done(self, _: ResponseDoneEvent) -> None:
+    def _handle_response_done(self, event: ResponseDoneEvent) -> None:
         if self._current_generation is None:
             return  # OpenAI has a race condition where we could receive response.done without any previous response.created (This happens generally during interruption)  # noqa: E501
 
         assert self._current_generation is not None, "current_generation is None"
+
+        created_timestamp = self._current_generation._created_timestamp
+        first_token_timestamp = self._current_generation._first_token_timestamp
+
         for generation in self._current_generation.messages.values():
             # close all messages that haven't been closed yet
             if not generation.text_ch.closed:
@@ -1056,6 +1239,38 @@ class RealtimeSession(
         self._current_generation.function_ch.close()
         self._current_generation.message_ch.close()
         self._current_generation = None
+
+        # calculate metrics
+        usage = (
+            event.response.usage.model_dump(exclude_defaults=True) if event.response.usage else {}
+        )
+        ttft = first_token_timestamp - created_timestamp if first_token_timestamp else -1
+        duration = time.time() - created_timestamp
+        metrics = RealtimeModelMetrics(
+            timestamp=created_timestamp,
+            request_id=event.response.id,
+            ttft=ttft,
+            duration=duration,
+            cancelled=event.response.status == "cancelled",
+            label=self._realtime_model._label,
+            input_tokens=usage.get("input_tokens", 0),
+            output_tokens=usage.get("output_tokens", 0),
+            total_tokens=usage.get("total_tokens", 0),
+            tokens_per_second=usage.get("output_tokens", 0) / duration,
+            input_token_details=RealtimeModelMetrics.InputTokenDetails(
+                audio_tokens=usage.get("input_token_details", {}).get("audio_tokens", 0),
+                cached_tokens=usage.get("input_token_details", {}).get("cached_tokens", 0),
+                text_tokens=usage.get("input_token_details", {}).get("text_tokens", 0),
+                cached_tokens_details=None,
+                image_tokens=0,
+            ),
+            output_token_details=RealtimeModelMetrics.OutputTokenDetails(
+                text_tokens=usage.get("output_token_details", {}).get("text_tokens", 0),
+                audio_tokens=usage.get("output_token_details", {}).get("audio_tokens", 0),
+                image_tokens=0,
+            ),
+        )
+        self.emit("metrics_collected", metrics)
 
     def _handle_error(self, event: ErrorEvent) -> None:
         if event.error.message.startswith("Cancellation failed"):
@@ -1181,3 +1396,23 @@ def _openai_item_to_livekit_item(item: ConversationItem) -> llm.ChatItem:
         )
 
     raise ValueError(f"unsupported item type: {item.type}")
+
+
+def _create_mock_audio_item(duration: float = 2) -> llm.ChatMessage:
+    audio_data = b"\x00\x00" * (SAMPLE_RATE * duration)
+    return llm.ChatMessage(
+        id=utils.shortuuid(_MOCK_AUDIO_ID_PREFIX),
+        role="user",
+        content=[
+            llm.AudioContent(
+                frame=[
+                    rtc.AudioFrame(
+                        data=audio_data,
+                        sample_rate=SAMPLE_RATE,
+                        num_channels=1,
+                        samples_per_channel=len(audio_data) // 2,
+                    )
+                ]
+            )
+        ],
+    )

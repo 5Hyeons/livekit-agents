@@ -44,7 +44,7 @@ class TTSError(BaseModel):
     type: Literal["tts_error"] = "tts_error"
     timestamp: float
     label: str
-    error: APIError = Field(..., exclude=True)
+    error: Exception = Field(..., exclude=True)
     recoverable: bool
 
 
@@ -227,7 +227,11 @@ class ChunkedStream(ABC):
                 # Reset the flag when retrying
                 self._current_attempt_has_error = False
 
-    def _emit_error(self, api_error: APIError, recoverable: bool):
+            except Exception as e:
+                self._emit_error(e, recoverable=False)
+                raise
+
+    def _emit_error(self, api_error: Exception, recoverable: bool):
         self._current_attempt_has_error = True
         self._tts.emit(
             "error",
@@ -250,7 +254,7 @@ class ChunkedStream(ABC):
             val = await self._event_aiter.__anext__()
         except StopAsyncIteration:
             if not self._synthesize_task.cancelled() and (exc := self._synthesize_task.exception()):
-                raise exc
+                raise exc  # noqa: B904
 
             raise StopAsyncIteration from None
 
@@ -325,7 +329,11 @@ class SynthesizeStream(ABC):
                 # Reset the flag when retrying
                 self._current_attempt_has_error = False
 
-    def _emit_error(self, api_error: APIError, recoverable: bool):
+            except Exception as e:
+                self._emit_error(e, recoverable=False)
+                raise
+
+    def _emit_error(self, api_error: Exception, recoverable: bool):
         self._current_attempt_has_error = True
         self._tts.emit(
             "error",
@@ -445,7 +453,7 @@ class SynthesizeStream(ABC):
             val = await self._event_aiter.__anext__()
         except StopAsyncIteration:
             if not self._task.cancelled() and (exc := self._task.exception()):
-                raise exc
+                raise exc  # noqa: B904
 
             raise StopAsyncIteration from None
 
