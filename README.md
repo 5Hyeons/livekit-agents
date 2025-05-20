@@ -1,3 +1,44 @@
+## Quick Start
+
+1. Create and activate virtual environment:
+```bash
+uv venv
+source .venv/bin/activate
+```
+
+2. Install dependencies:
+```bash
+uv sync
+```
+
+3. Create `.env` file in the root directory and add your API keys:
+```bash
+# LiveKit credentials
+LIVEKIT_URL=your_livekit_url
+LIVEKIT_API_KEY=your_livekit_api_key
+LIVEKIT_API_SECRET=your_livekit_api_secret
+
+# OpenAI credentials
+OPENAI_API_KEY=your_openai_api_key
+
+# ElevenLabs credentials
+ELEVENLABS_API_KEY=your_elevenlabs_api_key
+```
+
+4. Navigate to the agents directory:
+```bash
+cd livekit-agents
+```
+
+5. Run the agent:
+```bash
+# For development mode
+uv run mbti_prison_agent2.py dev
+
+# Or connect to a specific room
+uv run mbti_prison_agent2.py connect --room your_room_name
+```
+
 <!--BEGIN_BANNER_IMAGE-->
 
 <picture>
@@ -7,6 +48,7 @@
 </picture>
 
 <!--END_BANNER_IMAGE-->
+
 <br />
 
 ![PyPI - Version](https://img.shields.io/pypi/v/livekit-agents)
