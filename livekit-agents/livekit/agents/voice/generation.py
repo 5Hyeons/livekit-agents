@@ -5,6 +5,7 @@ from collections.abc import AsyncIterable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 import time
+import functools
 
 from pydantic import ValidationError
 
@@ -467,31 +468,53 @@ async def _execute_tools_task(
 
             def _log_exceptions(
                 task: asyncio.Task,
-                *,
                 py_out: _PythonOutput,
                 fnc_call: llm.FunctionCall,
             ) -> None:
-                if task.exception() is not None:
-                    logger.error(
-                        "exception occurred while executing tool",
-                        extra={
-                            "function": fnc_call.name,
-                            "speech_id": speech_handle.id,
-                        },
-                        exc_info=task.exception(),
-                    )
-                    py_out.exception = task.exception()
-                    tool_output.output.append(py_out)
+                if task.cancelled():
+                    # 선택 사항: 취소 시 tool_output에 추가할지 여부 결정
+                    # py_out.exception = asyncio.CancelledError()
+                    # tool_output.output.append(py_out)
+                    logger.debug(f"Tool task '{fnc_call.name}' was cancelled.")
                     return
 
-                py_out.output = task.result()
+                if exc := task.exception():
+                    py_out.exception = exc
+                    logger.exception(
+                        f"exception from AI function `{fnc_call.name}`",
+                        extra={
+                            "function": fnc_call.name,
+                            "arguments": fnc_call.arguments,
+                            "speech_id": speech_handle.id,
+                        },
+                    )
+
+                    # MCP 연결 오류 처리 로직 추가
+                    if isinstance(exc, ToolError) and \
+                       "MCP tool" in exc.message and \
+                       "network-related issue" in exc.message:
+                        
+                        logger.warning(f"MCP Connection-like error detected for tool '{fnc_call.name}'. Attempting to handle via AgentSession.")
+                        
+                        asyncio.create_task(
+                            session._handle_mcp_server_error(error=exc, tool_name=fnc_call.name)
+                        )
+                else:
+                    # 예외가 없는 경우 (성공)
+                    try:
+                        py_out.output = task.result()
+                        logger.debug(f"Tool '{fnc_call.name}' executed successfully, result: {py_out.output}")
+                    except asyncio.InvalidStateError:
+                        # 아직 result()를 호출할 수 없는 경우 (매우 드문 케이스, 일반적으로 done callback은 task 완료 후 호출됨)
+                        logger.error(f"Task '{fnc_call.name}' for tool in done callback but InvalidStateError on result().")
+                        py_out.exception = RuntimeError("Task finished but result not available") # 임시 예외 설정
+                
+                # 성공했든, (처리 가능한) 예외가 발생했든 tool_output에 추가
                 tool_output.output.append(py_out)
-                tasks.remove(task)
+                # tasks.remove(task) # 이 부분은 원래 콜백 바깥에 있었을 가능성이 높음
 
             task.add_done_callback(
-                lambda task, py_out=py_out, fnc_call=fnc_call: _log_exceptions(
-                    task, py_out=py_out, fnc_call=fnc_call
-                )
+                functools.partial(_log_exceptions, py_out=py_out, fnc_call=fnc_call)
             )
 
         await asyncio.shield(asyncio.gather(*tasks, return_exceptions=True))
@@ -564,9 +587,10 @@ class _PythonOutput:
 
     def sanitize(self) -> _SanitizedOutput:
         from .agent import Agent
+        logger.debug(f"Sanitizing _PythonOutput for tool '{self.fnc_call.name}'. Output: {self.output}, Exception: {self.exception}")
 
         if isinstance(self.exception, ToolError):
-            return _SanitizedOutput(
+            sanitized_output = _SanitizedOutput(
                 fnc_call=self.fnc_call.model_copy(),
                 fnc_call_out=llm.FunctionCallOutput(
                     name=self.fnc_call.name,
@@ -576,16 +600,20 @@ class _PythonOutput:
                 ),
                 agent_task=None,
             )
+            logger.debug(f"Sanitized output (ToolError): {sanitized_output.fnc_call_out}")
+            return sanitized_output
 
         if isinstance(self.exception, StopResponse):
-            return _SanitizedOutput(
+            sanitized_output = _SanitizedOutput(
                 fnc_call=self.fnc_call.model_copy(),
                 fnc_call_out=None,
                 agent_task=None,
             )
+            logger.debug(f"Sanitized output (StopResponse): {sanitized_output.fnc_call_out}")
+            return sanitized_output
 
         if self.exception is not None:
-            return _SanitizedOutput(
+            sanitized_output = _SanitizedOutput(
                 fnc_call=self.fnc_call.model_copy(),
                 fnc_call_out=llm.FunctionCallOutput(
                     name=self.fnc_call.name,
@@ -595,6 +623,8 @@ class _PythonOutput:
                 ),
                 agent_task=None,
             )
+            logger.debug(f"Sanitized output (Other Exception): {sanitized_output.fnc_call_out}")
+            return sanitized_output
 
         task: Agent | None = None
         fnc_out: Any = self.output
@@ -650,7 +680,7 @@ class _PythonOutput:
                 agent_task=None,
             )
 
-        return _SanitizedOutput(
+        sanitized_output = _SanitizedOutput(
             fnc_call=self.fnc_call.model_copy(),
             fnc_call_out=(
                 llm.FunctionCallOutput(
@@ -663,6 +693,8 @@ class _PythonOutput:
             reply_required=fnc_out is not None,  # require a reply if the tool returned an output
             agent_task=task,
         )
+        logger.debug(f"Sanitized output (Success): {sanitized_output.fnc_call_out}")
+        return sanitized_output
 
 
 INSTRUCTIONS_MESSAGE_ID = "lk.agent_task.instructions"  #  value must not change
@@ -785,10 +817,10 @@ async def _animation_forwarding_task(
             if frames_count == 1:
                 logger.info("첫 번째 애니메이션 프레임 전송 완료")
             
-            if frames_count % 60 == 0:  # 60 프레임마다 로그 (약 1초 분량)
-                elapsed = time.time() - start_time
-                fps = frames_count / elapsed if elapsed > 0 else 0
-                logger.debug(f"애니메이션 데이터 전송 중: {frames_count}개 프레임, FPS: {fps:.1f}")
+            # if frames_count % 120 == 0:  # 120 프레임마다 로그 (약 2초 분량)
+            #     elapsed = time.time() - start_time
+            #     fps = frames_count / elapsed if elapsed > 0 else 0
+            #     logger.debug(f"애니메이션 데이터 전송 중: {frames_count}개 프레임, FPS: {fps:.1f}")
             
             if not out.first_frame_fut.done():
                 out.first_frame_fut.set_result(None)
@@ -804,3 +836,4 @@ async def _animation_forwarding_task(
         fps = frames_count / duration if duration > 0 else 0
         logger.info(f"애니메이션 데이터 전송 완료: {frames_count}개 프레임, 소요 시간: {duration:.2f}초, 평균 FPS: {fps:.1f}")
         animation_output.flush()
+

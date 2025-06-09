@@ -3,16 +3,16 @@ from __future__ import annotations
 import asyncio
 import copy
 import time
-from collections.abc import AsyncIterable
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Generic, Literal, Protocol, TypeVar, Union, runtime_checkable
+from collections.abc import AsyncIterable, Callable, Coroutine
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Generic, Literal, Protocol, TypeVar, Union, runtime_checkable, Any
 
 from livekit import rtc
 
 from .. import debug, llm, stt, tts, stf, utils, vad
 from ..cli import cli
 from ..job import get_job_context
-from ..llm import ChatContext
+from ..llm import ChatContext, mcp
 from ..log import logger
 from ..types import NOT_GIVEN, NotGivenOr
 from ..utils.misc import is_given
@@ -161,7 +161,7 @@ class AgentSession(rtc.EventEmitter[EventTypes], Generic[Userdata_T]):
                 an interruption, only used if stt enabled. Default ``0``.
             min_endpointing_delay (float): Minimum time-in-seconds the agent
                 must wait after a potential end-of-utterance signal (from VAD
-                or an EOU model) before it declares the user’s turn complete.
+                or an EOU model) before it declares the user's turn complete.
                 Default ``0.5`` s.
             max_endpointing_delay (float): Maximum time-in-seconds the agent
                 will wait before terminating the turn. Default ``6.0`` s.
@@ -681,5 +681,123 @@ class AgentSession(rtc.EventEmitter[EventTypes], Generic[Userdata_T]):
 
     def _on_text_output_changed(self) -> None:
         pass
+
+    # ---
+
+    async def _handle_mcp_server_error(self, error: llm.ToolError, tool_name: str) -> None:
+        logger.warning(f"Handling MCP server error for tool '{tool_name}': {error}")
+
+        if not self.mcp_servers:
+            logger.error("No MCP servers configured to handle the error.")
+            return
+
+        original_mcp_server_config = None
+        target_mcp_server_index = -1
+        old_server_instance = None
+
+        # Find the failing server and its config. This assumes unique URLs for identification for now.
+        # A more robust mechanism would involve ToolError carrying a server_id.
+        # For this example, we iterate to find a match or default to the first HTTP server.
+        identified_server = False
+        for idx, server in enumerate(self.mcp_servers):
+            if isinstance(server, mcp.MCPServerHTTP): # Ensure it's HTTP type for now
+                # This is a simplified check. Ideally, error or tool_name helps identify the server.
+                # If error message contains server URL, that would be better.
+                # For now, if we have multiple http servers, this takes the first one that matches type,
+                # or if the error string happens to match its repr.
+                # This logic needs to be more robust if multiple MCP servers of the same type are used.
+                if repr(server) in str(error) or not old_server_instance: # Prioritize server in error, else first HTTP
+                    old_server_instance = server
+                    original_mcp_server_config = {
+                        "url": server.url,
+                        "headers": server.headers,
+                        "timeout": server._timeout,
+                        "sse_read_timeout": server._see_read_timeout,
+                        "client_session_timeout_seconds": server._read_timeout
+                    }
+                    target_mcp_server_index = idx
+                    identified_server = True
+                    if repr(server) in str(error):
+                        break # Found exact server from error message
+        
+        if not identified_server or old_server_instance is None:
+            logger.error(f"Could not reliably identify the problematic MCP server for tool '{tool_name}'. Aborting retry.")
+            return
+
+        server_id_for_retry = old_server_instance.url if isinstance(old_server_instance, mcp.MCPServerHTTP) else str(old_server_instance)
+        retry_count_attr = f"_mcp_retry_count_{server_id_for_retry}"
+        last_retry_attr = f"_mcp_last_retry_ts_{server_id_for_retry}"
+
+        current_retry_count = getattr(self, retry_count_attr, 0)
+        last_retry_ts = getattr(self, last_retry_attr, 0)
+
+        MAX_RETRIES = 3
+        RETRY_DELAY_SECONDS = 5
+        MIN_RETRY_INTERVAL_SECONDS = 10 # Reduced for faster testing, was 30
+
+        if time.time() - last_retry_ts < MIN_RETRY_INTERVAL_SECONDS and current_retry_count > 0:
+            logger.warning(f"MCP re-initialization for {server_id_for_retry} was attempted recently (within {MIN_RETRY_INTERVAL_SECONDS}s). Skipping.")
+            return
+
+        if current_retry_count >= MAX_RETRIES:
+            logger.error(f"Max retries ({MAX_RETRIES}) reached for MCP server {server_id_for_retry}. Giving up.")
+            return
+
+        setattr(self, retry_count_attr, current_retry_count + 1)
+        setattr(self, last_retry_attr, time.time())
+
+        logger.info(f"Attempting to recreate and re-initialize MCP server: {server_id_for_retry} (Attempt {current_retry_count + 1}/{MAX_RETRIES})")
+
+        try:
+            logger.info(f"Closing old MCP server instance connection: {old_server_instance}")
+            await old_server_instance.aclose()
+        except RuntimeError as e_close_runtime:
+            if "Attempted to exit cancel scope" in str(e_close_runtime):
+                logger.warning(f"Known issue while closing old MCP server {old_server_instance} (task context mismatch for AsyncExitStack): {e_close_runtime}. Cleanup might be incomplete.")
+            else:
+                logger.error(f"RuntimeError closing old MCP server {old_server_instance}: {e_close_runtime}")
+        except Exception as e_close:
+            logger.error(f"Error closing old MCP server instance {old_server_instance}: {e_close}")
+        
+        new_mcp_server = mcp.MCPServerHTTP(
+            url=original_mcp_server_config["url"],
+            headers=original_mcp_server_config["headers"],
+            timeout=original_mcp_server_config["timeout"],
+            sse_read_timeout=original_mcp_server_config["sse_read_timeout"],
+            client_session_timeout_seconds=original_mcp_server_config["client_session_timeout_seconds"]
+        )
+
+        try:
+            if current_retry_count > 0: # First attempt (0) has no delay
+                 await asyncio.sleep(RETRY_DELAY_SECONDS)
+            await new_mcp_server.initialize()
+            
+            self.mcp_servers[target_mcp_server_index] = new_mcp_server
+            logger.info(f"Successfully recreated and re-initialized MCP server: {new_mcp_server}")
+            setattr(self, retry_count_attr, 0)
+
+            if self._activity and self._activity.llm_tools:
+                logger.info(f"Refreshing ToolContext for server {old_server_instance} -> {new_mcp_server}")
+                keys_to_remove = [
+                    name for name, r_tool in self._activity.llm_tools.raw_function_tools.items()
+                    if hasattr(r_tool, '_mcp_server_origin') and r_tool._mcp_server_origin == old_server_instance
+                ]
+                for key in keys_to_remove:
+                    del self._activity.llm_tools.raw_function_tools[key]
+                    logger.debug(f"Removed stale MCP tool '{key}' from ToolContext originating from {old_server_instance}.")
+
+                new_mcp_server.invalidate_cache()
+                if hasattr(self._activity, '_load_mcp_tools'): # Check if method exists
+                    await self._activity._load_mcp_tools(self._activity.llm_tools, [new_mcp_server])
+                    logger.info(f"Successfully reloaded tools from {new_mcp_server} into ToolContext.")
+                else:
+                    logger.warning("Could not reload MCP tools into activity: _load_mcp_tools method not found.")
+
+        except Exception as e_init:
+            logger.error(f"Failed to initialize new MCP server instance for {server_id_for_retry}: {e_init}")
+            try:
+                await new_mcp_server.aclose()
+            except Exception as e_new_close:
+                logger.error(f"Error closing newly created (but failed to init) MCP server {new_mcp_server}: {e_new_close}")
 
     # ---

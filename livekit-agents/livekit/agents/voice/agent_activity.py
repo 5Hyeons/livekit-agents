@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 from livekit import rtc
 
-from .. import debug, llm, stt, tts, utils, vad
+from .. import debug, llm, stt, tts, utils, vad, stf
 from ..llm.tool_context import StopResponse
 from ..log import logger
 from ..metrics import (
@@ -198,11 +198,11 @@ class AgentActivity(RecognitionHooks):
 
     @property
     def tts(self) -> tts.TTS | None:
-        return self._agent.tts or self._session.tts
-    
+        return self._agent.tts if is_given(self._agent.tts) else self._session.tts
+
     @property
     def stf(self) -> stf.STF | None:
-        return self._agent.tts if is_given(self._agent.tts) else self._session.tts
+        return self._agent.stf if is_given(self._agent.stf) else self._session.stf
 
     @property
     def vad(self) -> vad.VAD | None:
@@ -608,6 +608,7 @@ class AgentActivity(RecognitionHooks):
             )
 
         elif isinstance(self.llm, llm.LLM):
+            logger.debug("AgentActivity.pipeline_reply")
             # instructions used inside generate_reply are "extra" instructions.
             # this matches the behavior of the Realtime API:
             # https://platform.openai.com/docs/api-reference/realtime-client-events/response/create
@@ -1127,6 +1128,7 @@ class AgentActivity(RecognitionHooks):
         )
 
         audio_output = self._session.output.audio if self._session.output.audio_enabled else None
+        animation_output = self._session.output.animation if self._session.output.animation_enabled else None
         text_output = (
             self._session.output.transcription
             if self._session.output.transcription_enabled
@@ -1187,11 +1189,14 @@ class AgentActivity(RecognitionHooks):
                 # 오디오 출력용 스트림 업데이트
                 tts_gen_data.audio_ch = tts_audio_for_output
 
+
         await speech_handle.wait_if_not_interrupted(
             [asyncio.ensure_future(speech_handle._wait_for_authorization())]
         )
+        logger.info(f"[agent_activity] start audio_output check")
 
         if speech_handle.interrupted:
+            logger.info(f"[agent_activity] speech_handle.interrupted")
             await utils.aio.cancel_and_wait(*tasks)
             return
 
@@ -1202,11 +1207,14 @@ class AgentActivity(RecognitionHooks):
         forward_task, text_out = perform_text_forwarding(text_output=text_output, source=tr_node)
         tasks.append(forward_task)
 
+        
         def _on_first_frame(_: asyncio.Future) -> None:
             self._session._update_agent_state("speaking")
 
         audio_out: _AudioOutput | None = None
         if audio_output is not None:
+            logger.info(f"[agent_activity] audio_output is not None")
+
             assert tts_gen_data is not None
             # TODO(theomonnom): should the audio be added to the chat_context too?
             forward_task, audio_out = perform_audio_forwarding(
@@ -1224,6 +1232,7 @@ class AgentActivity(RecognitionHooks):
                 )
                 tasks.append(forward_anim_task)
         else:
+            logger.info(f"[agent_activity] audio_output is None")
             text_out.first_text_fut.add_done_callback(_on_first_frame)
 
         # start to execute tools (only after play())
@@ -1269,6 +1278,9 @@ class AgentActivity(RecognitionHooks):
                         forwarded_text = playback_ev.synchronized_transcript
                 else:
                     forwarded_text = ""
+            if animation_output is not None:
+                animation_output.clear_buffer()
+                logger.debug(f"[agent_activity] 애니메이션 데이터 전송 중단: interrupted={True}")
 
             msg = chat_ctx.add_message(
                 role="assistant",

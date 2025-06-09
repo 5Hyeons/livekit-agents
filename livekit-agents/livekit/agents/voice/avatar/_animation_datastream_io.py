@@ -19,7 +19,7 @@ ANIMATION_STREAM_TOPIC = "lk.animation_stream"
 RPC_CLEAR_BUFFER = "lk.clear_buffer"  # 기존 오디오 클리어와 동일한 메서드 사용
 
 # 애니메이션 데이터에 대한 메타데이터 형식
-ANIMATION_DATA_HEADER_FORMAT = ">III"  # frame_index, num_features, timestamp_us
+ANIMATION_DATA_HEADER_FORMAT = ">IIII"  # frame_index, num_features, timestamp_us, segment_id
 ANIMATION_DATA_HEADER_SIZE = struct.calcsize(ANIMATION_DATA_HEADER_FORMAT)
 
 
@@ -49,6 +49,7 @@ class ByteStreamAnimationOutput(AnimationDataOutput):
                 destination_identities=[self._destination_identity],
                 attributes={
                     "num_features": str(data.num_features),
+                    "segment_id": str(data.segment_id),
                 },
             )
             self._frame_index = 0
@@ -58,7 +59,8 @@ class ByteStreamAnimationOutput(AnimationDataOutput):
             ANIMATION_DATA_HEADER_FORMAT, 
             self._frame_index, 
             data.num_features, 
-            data.timestamp_us
+            data.timestamp_us,
+            data.segment_id
         )
         
         # 헤더와 데이터를 함께 전송

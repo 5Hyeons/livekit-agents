@@ -11,6 +11,7 @@ import librosa  # Still needed for resampling in the stream
 import numpy as np
 from livekit import rtc
 import time # Added time
+import uuid
 
 # Removed onnxruntime, psutil, os, math imports
 # import onnxruntime
@@ -36,13 +37,14 @@ DEFAULT_STF_SERVER_URL = "http://localhost:8015/stf"
 class STFStream:
     """Speech-to-Face stream class - Processes audio and gets blendshapes from a server."""
 
-    def __init__(self, stf: "FaceAnimatorSTF") -> None:
+    def __init__(self, stf: "FaceAnimatorSTF", chunk_duration_sec: float) -> None:
         self._stf = stf  # Now expects FaceAnimatorSTF instance
         self._audio_queue = asyncio.Queue[Optional[rtc.AudioFrame]]()
         self._is_closed = False
         self._task: Optional[asyncio.Task] = None
         self._blendshape_frames = asyncio.Queue[Optional[np.ndarray]]()  # Queue for numpy arrays
         self._last_frame_time = 0.0
+        self._chunk_duration_sec = chunk_duration_sec
 
     def push_frame(self, frame: rtc.AudioFrame) -> None:
         """Add audio frame to the STF processing queue."""
@@ -52,8 +54,13 @@ class STFStream:
 
     def end_input(self) -> None:
         """Signal that audio input is complete."""
-        if not self._is_closed:
-            self._audio_queue.put_nowait(None)  # Use None as a sentinel
+        # if not self._is_closed:
+        self._audio_queue.put_nowait(None)  # Use None as a sentinel
+
+    def flush(self) -> None:
+        while not self._audio_queue.empty():
+            self._audio_queue.get_nowait()
+        self.end_input()
 
     async def _preprocess_audio_chunk(self, audio_data: np.ndarray) -> np.ndarray:
         """Preprocesses a chunk of audio data (normalization, reshaping)."""
@@ -80,17 +87,17 @@ class STFStream:
             # Added timeout
             async with session.post(self._stf._server_url, json=payload, timeout=aiohttp.ClientTimeout(total=30)) as response:
                 response_time = time.time() - request_start_time
-                logger.debug(
-                    f"STF server request sent (Audio duration: {audio_features.shape[1]/16000:.2f}s). "
-                    f"Response: {response.status} ({response_time:.2f}s)"
-                )
+                # logger.debug(
+                #     f"STF server request sent (Audio duration: {audio_features.shape[1]/16000:.2f}s). "
+                #     f"Response: {response.status} ({response_time:.2f}s)"
+                # )
                 response.raise_for_status()
                 result = await response.json()
                 blendshapes_list = result.get("blendshapes")
                 if blendshapes_list is not None:
                     # Convert list of lists back to numpy array
                     blendshapes_array = np.array(blendshapes_list, dtype=np.float32)
-                    logger.debug(f"Received {blendshapes_array.shape[0]} blendshape frames from server.")
+                    # logger.debug(f"Received {blendshapes_array.shape[0]} blendshape frames from server.")
                     return blendshapes_array
                 else:
                     logger.warning("STF server response did not contain 'blendshapes'.")
@@ -119,13 +126,12 @@ class STFStream:
         """Processes audio frames and gets blendshape data from the server."""
         audio_buffer = np.array([], dtype=np.float32)
         # Use chunk duration consistent with test client or configurable? Let's use 1 second for now.
-        chunk_duration_sec = 1.0
-        min_samples = int(chunk_duration_sec * 16000)  # Process in chunks of 1 second
+        min_samples = int(self._chunk_duration_sec * 16000)  # Process in chunks of 1 second
         frames_processed = 0
         animations_generated = 0
         start_time = time.time()
 
-        logger.info(f"STF 프레임 처리 시작 (서버: {self._stf._server_url}, 청크 크기: {chunk_duration_sec}초)")
+        logger.info(f"STF 프레임 처리 시작 (서버: {self._stf._server_url}, 청크 크기: {self._chunk_duration_sec}초)")
 
         try:
             while True:
@@ -162,7 +168,7 @@ class STFStream:
                     # Keep remaining audio
                     audio_buffer = audio_buffer[min_samples:]
 
-                    logger.debug(f"STF 처리 청크 준비 (길이: {len(audio_to_process)/16000.0:.2f}초)")
+                    # logger.debug(f"STF 처리 청크 준비 (길이: {len(audio_to_process)/16000.0:.2f}초)")
                     # Preprocess the chunk
                     audio_feats = await self._preprocess_audio_chunk(audio_to_process)
 
@@ -172,18 +178,17 @@ class STFStream:
 
                         if animation_output is not None and animation_output.size > 0:
                             num_frames = animation_output.shape[0]
-                            logger.debug(f"서버로부터 {num_frames}개 블렌드쉐입 프레임 수신")
+                            # logger.debug(f"서버로부터 {num_frames}개 블렌드쉐입 프레임 수신")
                             # Put each frame (numpy array) into the queue
                             for blendshape_frame in animation_output:
                                 await self._blendshape_frames.put(blendshape_frame)
                                 animations_generated += 1
 
                             # Periodic logging
-                            # Log every 5 seconds of animation
-                            if animations_generated % (self._stf._frame_rate * 5) == 0:
-                                elapsed = time.time() - start_time
-                                fps = animations_generated / elapsed if elapsed > 0 else 0
-                                logger.debug(f"애니메이션 생성 진행: {animations_generated}개 프레임, 실시간 FPS 추정: {fps:.1f}")
+                            # if animations_generated % (self._stf._frame_rate * 5) == 0:
+                            #     elapsed = time.time() - start_time
+                            #     fps = animations_generated / elapsed if elapsed > 0 else 0
+                            #     logger.debug(f"애니메이션 생성 진행: {animations_generated}개 프레임, 실시간 FPS 추정: {fps:.1f}")
                     else:
                          logger.warning("Skipping inference request for empty preprocessed chunk.")
 
@@ -191,7 +196,7 @@ class STFStream:
             # Process any remaining audio in the buffer after input ends
             if len(audio_buffer) > 0:
                 buffer_duration = len(audio_buffer) / 16000.0
-                logger.debug(f"남은 오디오 처리: {buffer_duration:.2f}초 ({len(audio_buffer)} 샘플)")
+                # logger.debug(f"남은 오디오 처리: {buffer_duration:.2f}초 ({len(audio_buffer)} 샘플)")
 
                 audio_feats = await self._preprocess_audio_chunk(audio_buffer)
 
@@ -199,7 +204,7 @@ class STFStream:
                     animation_output = await self._send_inference_request(audio_feats)
                     if animation_output is not None and animation_output.size > 0:
                         num_frames = animation_output.shape[0]
-                        logger.debug(f"최종 STF 추론: 서버로부터 {num_frames}개 프레임 수신")
+                        # logger.debug(f"최종 STF 추론: 서버로부터 {num_frames}개 프레임 수신")
                         for blendshape_frame in animation_output:
                             await self._blendshape_frames.put(blendshape_frame)
                             animations_generated += 1
@@ -241,10 +246,11 @@ class STFStream:
 
         # Create timestamp
         timestamp_us = int(asyncio.get_event_loop().time() * 1_000_000)
+        segment_id = str(uuid.uuid4())
 
         # Create AnimationData object directly from the blendshape numpy array
         animation_data = AnimationData.from_numpy(
-            blendshape_frame, timestamp_us=timestamp_us
+            blendshape_frame, timestamp_us=timestamp_us, segment_id=segment_id
         )
 
         # Frame rate logging (optional)
@@ -258,25 +264,30 @@ class STFStream:
     async def aclose(self) -> None:
         """Close the stream."""
         if not self._is_closed:
-            self._is_closed = True
             # Ensure the processing loop finishes
-            self.end_input()
+            # self.end_input()
+            logger.debug("STF 스트림 aclose 호출")
+            self.flush()
+            self._is_closed = True
+            await aio.cancel_and_wait(self._task)
 
-            if self._task is not None:
-                try:
-                    # Wait for task to finish, handling cancellation
-                    await asyncio.wait_for(self._task, timeout=5.0)
-                except asyncio.CancelledError:
-                     logger.debug("STF processing task cancelled during close.")
-                except asyncio.TimeoutError:
-                     logger.warning("Timeout waiting for STF processing task during close. Cancelling.")
-                     self._task.cancel()
-                     try:
-                         await self._task # Allow cancellation to propagate
-                     except asyncio.CancelledError:
-                         pass
-                except Exception:
-                     logger.error("Error during STFStream task cleanup", exc_info=True)
+
+
+            # if self._task is not None:
+            #     try:
+            #         # Wait for task to finish, handling cancellation
+            #         await asyncio.wait_for(self._task, timeout=5.0)
+            #     except asyncio.CancelledError:
+            #          logger.debug("STF processing task cancelled during close.")
+            #     except asyncio.TimeoutError:
+            #          logger.warning("Timeout waiting for STF processing task during close. Cancelling.")
+            #          self._task.cancel()
+            #          try:
+            #              await self._task # Allow cancellation to propagate
+            #          except asyncio.CancelledError:
+            #              pass
+            #     except Exception:
+            #          logger.error("Error during STFStream task cleanup", exc_info=True)
             # Clear queues? Maybe not necessary if task completion handles it.
 
 
@@ -322,7 +333,7 @@ class FaceAnimatorSTF(STF):
         # These parameters are now primarily informational or defaults
         sample_rate: int = 16000, # Expected input sample rate (client enforces this)
         num_features: int = 52, # Expected number of blendshape features from server
-        min_audio_duration: float = 1.0, # Client-side chunking duration (in STFStream)
+        chunk_duration_sec: float = 1.0, # Client-side chunking duration (in STFStream)
         http_session: Optional[aiohttp.ClientSession] = None,
     ) -> None:
         self._server_url = server_url
@@ -330,7 +341,7 @@ class FaceAnimatorSTF(STF):
         self._frame_rate = frame_rate
         self._num_features = num_features
         # Used by STFStream chunking logic
-        self._min_audio_duration = min_audio_duration
+        self._chunk_duration_sec = chunk_duration_sec
 
         # Remove local ONNX model attributes
         # self._audio_enc_session = None
@@ -370,7 +381,7 @@ class FaceAnimatorSTF(STF):
 
     def stream(self) -> STFStream:
         """Create a new STF stream."""
-        stream = STFStream(self)
+        stream = STFStream(self, chunk_duration_sec=self._chunk_duration_sec)
         # Track the created stream
         self._streams.add(stream)
         return stream
@@ -406,4 +417,4 @@ class FaceAnimatorSTF(STF):
              logger.error(f"Error forwarding audio to STF stream: {e}", exc_info=True)
         finally:
             # Signal end of audio input
-            stream.end_input() 
+            stream.end_input()

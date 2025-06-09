@@ -1,4 +1,5 @@
 import json
+import logging
 from abc import ABC, abstractmethod
 from contextlib import AbstractAsyncContextManager, AsyncExitStack
 from datetime import timedelta
@@ -18,6 +19,7 @@ except ImportError as e:
         "To fix this, install the optional dependency: pip install 'livekit-agents[mcp]'"
     ) from e
 
+logger = logging.getLogger(__name__)
 
 from .tool_context import RawFunctionTool, ToolError, function_tool
 
@@ -81,34 +83,54 @@ class MCPServer(ABC):
         self, name: str, description: str | None, input_schema: dict
     ) -> MCPTool:
         async def _tool_called(raw_arguments: dict) -> Any:
-            # In case (somehow), the tool is called after the MCPServer aclose.
-            if self._client is None:
+            logger.debug(f"MCP tool '{name}' (server: {self}) called with args: {raw_arguments}")
+            if not self.initialized or self._client is None:
+                logger.error(f"MCP tool '{name}' invocation attempt while server not initialized or client is None. Server: {self}")
                 raise ToolError(
-                    "Tool invocation failed: internal service is unavailable. "
-                    "Please check that the MCPServer is still running."
+                    f"MCP tool '{name}' invocation failed: MCP client is not available. "
+                    "Please check that the MCPServer is properly initialized and running."
                 )
 
-            tool_result = await self._client.call_tool(name, raw_arguments)
+            try:
+                if self._client is None:
+                    logger.error(f"Critical: MCP client became None just before call_tool for tool '{name}'. Server: {self}")
+                    raise ToolError("MCP client unexpectedly became None before tool call.")
+                
+                tool_result = await self._client.call_tool(name, raw_arguments)
+            except Exception as e:
+                logger.error(f"Exception during MCPServer '{self}' call_tool for '{name}': {type(e).__name__} - {e}", exc_info=True)
+                raise ToolError(
+                    f"MCP tool '{name}' (server: {self}) invocation failed due to a network-related issue: {type(e).__name__} - {e}. "
+                    "This might indicate the MCP server is unavailable or a network problem."
+                ) from e
 
             if tool_result.isError:
                 error_str = "\n".join(str(part) for part in tool_result.content)
+                logger.warning(f"MCP tool '{name}' (server: {self}) returned error: {error_str}")
                 raise ToolError(error_str)
 
             # TODO(theomonnom): handle images & binary messages
             if len(tool_result.content) == 1:
-                return tool_result.content[0].model_dump_json()
+                result = tool_result.content[0].model_dump_json()
+                logger.debug(f"MCP tool '{name}' (server: {self}) succeeded with result: {result}")
+                return result
             elif len(tool_result.content) > 1:
-                return json.dumps([item.model_dump() for item in tool_result.content])
+                result_list = [item.model_dump() for item in tool_result.content]
+                logger.debug(f"MCP tool '{name}' (server: {self}) succeeded with multiple results: {result_list}")
+                return json.dumps(result_list)
 
+            logger.warning(f"MCP tool '{name}' (server: {self}) completed without producing a valid result structure.")
             raise ToolError(
                 f"Tool '{name}' completed without producing a result. "
                 "This might indicate an issue with internal processing."
             )
 
-        return function_tool(
+        created_tool = function_tool(
             _tool_called,
             raw_schema={"name": name, "description": description, "parameters": input_schema},
         )
+        created_tool._mcp_server_origin = self  # Add a reference to the MCPServer instance
+        return created_tool
 
     async def aclose(self) -> None:
         try:

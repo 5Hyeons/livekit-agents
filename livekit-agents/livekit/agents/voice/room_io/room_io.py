@@ -160,9 +160,10 @@ class RoomIO:
             )
 
         if self._output_options.animation_enabled:
+            # self._animation_output = self._create_animation_output(self._participant_identity)
             self._animation_output = _ParticipantAnimationOutput(
                 self._room,
-                participant=self._participant_identity,
+                participant=self._participant_identity
             )
             logger.info("애니메이션 데이터 출력 활성화됨")
 
@@ -299,6 +300,8 @@ class RoomIO:
             self._video_input.set_participant(participant_identity)
 
         self._update_transcription_output(self._user_tr_output, participant_identity)
+        # if self._animation_output:
+        #     self._update_animation_output(self._animation_output, participant_identity)
 
     def unset_participant(self) -> None:
         self._participant_identity = None
@@ -308,6 +311,8 @@ class RoomIO:
         if self._video_input:
             self._video_input.set_participant(None)
         self._update_transcription_output(self._user_tr_output, None)
+        # if self._animation_output:
+        #     self._update_animation_output(self._animation_output, None)
 
     @utils.log_exceptions(logger=logger)
     async def _init_task(self) -> None:
@@ -324,6 +329,8 @@ class RoomIO:
         self._update_transcription_output(
             self._agent_tr_output, self._room.local_participant.identity
         )
+        # if self._animation_output:
+        #     self._update_animation_output(self._animation_output, self._room.local_participant.identity)
         if self._audio_output:
             await self._audio_output.start()
 
@@ -430,3 +437,18 @@ class RoomIO:
                 sink, (_ParticipantLegacyTranscriptionOutput, _ParticipantTranscriptionOutput)
             ):
                 sink.set_participant(participant_identity)
+
+    def _create_animation_output(
+        self, participant_identity: str | None
+    ) -> _ParticipantAnimationOutput:
+        return _ParticipantAnimationOutput(
+            room=self._room, participant=participant_identity
+        )
+
+    def _update_animation_output(
+        self, output: _ParticipantAnimationOutput | None, participant_identity: str | None
+    ) -> None:
+        if output is None:
+            return
+
+        output.set_participant(participant_identity)
