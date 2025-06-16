@@ -19,15 +19,15 @@ if TYPE_CHECKING:
 STTNode = Callable[
     [AsyncIterable[rtc.AudioFrame], "ModelSettings"],
     Union[
-        Optional[Union[AsyncIterable[stt.SpeechEvent], AsyncIterable[str]]],
-        Awaitable[Optional[Union[AsyncIterable[stt.SpeechEvent], AsyncIterable[str]]]],
+        Optional[Union[AsyncIterable[Union[stt.SpeechEvent, str]]]],
+        Awaitable[Optional[Union[AsyncIterable[Union[stt.SpeechEvent, str]]]]],
     ],
 ]
 LLMNode = Callable[
-    [llm.ChatContext, list[llm.FunctionTool], "ModelSettings"],
+    [llm.ChatContext, list[Union[llm.FunctionTool, llm.RawFunctionTool]], ModelSettings],
     Union[
-        Optional[Union[AsyncIterable[llm.ChatChunk], AsyncIterable[str], str]],
-        Awaitable[Optional[Union[AsyncIterable[llm.ChatChunk], AsyncIterable[str], str]]],
+        Optional[Union[AsyncIterable[Union[llm.ChatChunk, str]], str, llm.ChatChunk]],
+        Awaitable[Optional[Union[AsyncIterable[Union[llm.ChatChunk, str]], str, llm.ChatChunk]]],
     ],
 ]
 TTSNode = Callable[
@@ -59,7 +59,8 @@ class AudioInput:
     def __aiter__(self) -> AsyncIterator[rtc.AudioFrame]:
         return self
 
-    async def __anext__(self) -> rtc.AudioFrame: ...
+    async def __anext__(self) -> rtc.AudioFrame:
+        raise NotImplementedError
 
     def on_attached(self) -> None: ...
 
@@ -70,7 +71,8 @@ class VideoInput:
     def __aiter__(self) -> AsyncIterator[rtc.VideoFrame]:
         return self
 
-    async def __anext__(self) -> rtc.VideoFrame: ...
+    async def __anext__(self) -> rtc.VideoFrame:
+        raise NotImplementedError
 
     def on_attached(self) -> None: ...
 
@@ -285,7 +287,9 @@ class AnimationDataOutput(ABC):
 
 
 class AgentInput:
-    def __init__(self, video_changed: Callable, audio_changed: Callable) -> None:
+    def __init__(
+        self, video_changed: Callable[[], None], audio_changed: Callable[[], None]
+    ) -> None:
         self._video_stream: VideoInput | None = None
         self._audio_stream: AudioInput | None = None
         self._video_changed = video_changed
@@ -295,7 +299,7 @@ class AgentInput:
         self._audio_enabled = True
         self._video_enabled = True
 
-    def set_audio_enabled(self, enable: bool):
+    def set_audio_enabled(self, enable: bool) -> None:
         if enable == self._audio_enabled:
             return
 
@@ -309,7 +313,7 @@ class AgentInput:
         else:
             self._audio_stream.on_detached()
 
-    def set_video_enabled(self, enable: bool):
+    def set_video_enabled(self, enable: bool) -> None:
         if enable == self._video_enabled:
             return
 
@@ -353,10 +357,10 @@ class AgentInput:
 class AgentOutput:
     def __init__(
         self,
-        video_changed: Callable,
-        audio_changed: Callable,
-        transcription_changed: Callable,
-        animation_changed: Callable = lambda: None,  # 기본값으로 빈 콜백 추가
+        video_changed: Callable[[], None],
+        audio_changed: Callable[[], None],
+        transcription_changed: Callable[[], None],
+        animation_changed: Callable[[], None] = lambda: None,
     ) -> None:
         self._video_sink: VideoOutput | None = None
         self._audio_sink: AudioOutput | None = None
@@ -372,7 +376,7 @@ class AgentOutput:
         self._transcription_enabled = True
         self._animation_enabled = True
 
-    def set_video_enabled(self, enabled: bool):
+    def set_video_enabled(self, enabled: bool) -> None:
         if enabled == self._video_enabled:
             return
 
@@ -386,7 +390,7 @@ class AgentOutput:
         else:
             self._video_sink.on_detached()
 
-    def set_audio_enabled(self, enabled: bool):
+    def set_audio_enabled(self, enabled: bool) -> None:
         if enabled == self._audio_enabled:
             return
 
@@ -400,7 +404,7 @@ class AgentOutput:
         else:
             self._audio_sink.on_detached()
 
-    def set_transcription_enabled(self, enabled: bool):
+    def set_transcription_enabled(self, enabled: bool) -> None:
         if enabled == self._transcription_enabled:
             return
 

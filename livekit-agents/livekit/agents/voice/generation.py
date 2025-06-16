@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterable
 from dataclasses import dataclass, field
+from functools import partial
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 import time
 import functools
@@ -37,7 +38,7 @@ if TYPE_CHECKING:
 
 @runtime_checkable
 class _ACloseable(Protocol):
-    async def aclose(self): ...
+    async def aclose(self) -> Any: ...
 
 
 @dataclass
@@ -54,15 +55,15 @@ def perform_llm_inference(
     node: io.LLMNode,
     chat_ctx: ChatContext,
     tool_ctx: ToolContext,
-    model_settings: "ModelSettings",
-) -> tuple[asyncio.Task, _LLMGenerationData]:
-    text_ch = aio.Chan()
-    function_ch = aio.Chan()
+    model_settings: ModelSettings,
+) -> tuple[asyncio.Task[bool], _LLMGenerationData]:
+    text_ch = aio.Chan[str]()
+    function_ch = aio.Chan[llm.FunctionCall]()
 
     data = _LLMGenerationData(text_ch=text_ch, function_ch=function_ch)
 
     @utils.log_exceptions(logger=logger)
-    async def _inference_task():
+    async def _inference_task() -> bool:
         tools = list(tool_ctx.function_tools.values())
         llm_node = node(
             chat_ctx,
@@ -134,12 +135,12 @@ class _TTSGenerationData:
 
 
 def perform_tts_inference(
-    *, node: io.TTSNode, input: AsyncIterable[str], model_settings: "ModelSettings"
-) -> tuple[asyncio.Task, _TTSGenerationData]:
+    *, node: io.TTSNode, input: AsyncIterable[str], model_settings: ModelSettings
+) -> tuple[asyncio.Task[bool], _TTSGenerationData]:
     audio_ch = aio.Chan[rtc.AudioFrame]()
 
     @utils.log_exceptions(logger=logger)
-    async def _inference_task():
+    async def _inference_task() -> bool:
         tts_node = node(input, model_settings)
         if asyncio.iscoroutine(tts_node):
             tts_node = await tts_node
@@ -239,12 +240,12 @@ async def _stf_inference_task(
 @dataclass
 class _TextOutput:
     text: str
-    first_text_fut: asyncio.Future
+    first_text_fut: asyncio.Future[None]
 
 
 def perform_text_forwarding(
     *, text_output: io.TextOutput | None, source: AsyncIterable[str]
-) -> tuple[asyncio.Task, _TextOutput]:
+) -> tuple[asyncio.Task[None], _TextOutput]:
     out = _TextOutput(text="", first_text_fut=asyncio.Future())
     task = asyncio.create_task(_text_forwarding_task(text_output, source, out))
     return task, out
@@ -275,14 +276,14 @@ async def _text_forwarding_task(
 @dataclass
 class _AudioOutput:
     audio: list[rtc.AudioFrame]
-    first_frame_fut: asyncio.Future
+    first_frame_fut: asyncio.Future[None]
 
 
 def perform_audio_forwarding(
     *,
     audio_output: io.AudioOutput,
     tts_output: AsyncIterable[rtc.AudioFrame],
-) -> tuple[asyncio.Task, _AudioOutput]:
+) -> tuple[asyncio.Task[None], _AudioOutput]:
     out = _AudioOutput(audio=[], first_frame_fut=asyncio.Future())
     task = asyncio.create_task(_audio_forwarding_task(audio_output, tts_output, out))
     return task, out
@@ -335,7 +336,7 @@ async def _audio_forwarding_task(
 @dataclass
 class _ToolOutput:
     output: list[_PythonOutput]
-    first_tool_fut: asyncio.Future
+    first_tool_fut: asyncio.Future[None]
 
 
 def perform_tool_executions(
@@ -345,7 +346,7 @@ def perform_tool_executions(
     tool_ctx: ToolContext,
     tool_choice: NotGivenOr[llm.ToolChoice],
     function_stream: AsyncIterable[llm.FunctionCall],
-) -> tuple[asyncio.Task, _ToolOutput]:
+) -> tuple[asyncio.Task[None], _ToolOutput]:
     tool_output = _ToolOutput(output=[], first_tool_fut=asyncio.Future())
     task = asyncio.create_task(
         _execute_tools_task(
@@ -376,7 +377,7 @@ async def _execute_tools_task(
     from .agent import _authorize_inline_task
     from .events import RunContext
 
-    tasks: list[asyncio.Task] = []
+    tasks: list[asyncio.Task[Any]] = []
     try:
         async for fnc_call in function_stream:
             if tool_choice == "none":
@@ -411,6 +412,7 @@ async def _execute_tools_task(
                 )
                 continue
 
+            py_out = _PythonOutput(fnc_call=fnc_call, output=None, exception=None)
             try:
                 json_args = fnc_call.arguments or "{}"
                 fnc_args, fnc_kwargs = llm_utils.prepare_function_arguments(
@@ -421,7 +423,7 @@ async def _execute_tools_task(
                     ),
                 )
 
-            except (ValidationError, ValueError):
+            except (ValidationError, ValueError) as e:
                 logger.exception(
                     f"tried to call AI function `{fnc_call.name}` with invalid arguments",
                     extra={
@@ -430,6 +432,8 @@ async def _execute_tools_task(
                         "speech_id": speech_handle.id,
                     },
                 )
+                py_out.exception = e
+                tool_output.output.append(py_out)
                 continue
 
             if not tool_output.first_tool_fut.done():
@@ -444,7 +448,6 @@ async def _execute_tools_task(
                 },
             )
 
-            py_out = _PythonOutput(fnc_call=fnc_call, output=None, exception=None)
             try:
                 task = asyncio.create_task(
                     function_tool(*fnc_args, **fnc_kwargs),
@@ -453,7 +456,7 @@ async def _execute_tools_task(
 
                 tasks.append(task)
                 _authorize_inline_task(task, function_call=fnc_call)
-            except Exception:
+            except Exception as e:
                 # catching exceptions here because even though the function is asynchronous,
                 # errors such as missing or incompatible arguments can still occur at
                 # invocation time.
@@ -464,10 +467,13 @@ async def _execute_tools_task(
                         "speech_id": speech_handle.id,
                     },
                 )
+                py_out.exception = e
+                tool_output.output.append(py_out)
                 continue
 
             def _log_exceptions(
-                task: asyncio.Task,
+                task: asyncio.Task[Any],
+                *,
                 py_out: _PythonOutput,
                 fnc_call: llm.FunctionCall,
             ) -> None:
@@ -513,9 +519,7 @@ async def _execute_tools_task(
                 tool_output.output.append(py_out)
                 # tasks.remove(task) # 이 부분은 원래 콜백 바깥에 있었을 가능성이 높음
 
-            task.add_done_callback(
-                functools.partial(_log_exceptions, py_out=py_out, fnc_call=fnc_call)
-            )
+            task.add_done_callback(partial(_log_exceptions, py_out=py_out, fnc_call=fnc_call))
 
         await asyncio.shield(asyncio.gather(*tasks, return_exceptions=True))
 
