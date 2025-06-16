@@ -1211,6 +1211,15 @@ class AgentActivity(RecognitionHooks):
         def _on_first_frame(_: asyncio.Future) -> None:
             self._session._update_agent_state("speaking")
 
+            # 애니메이션 데이터 출력 처리
+            if self._session.output.animation is not None and stf_gen_data is not None:
+                forward_anim_task, anim_out = perform_animation_forwarding(
+                    animation_output=self._session.output.animation,
+                    stf_output=stf_gen_data.anim_ch
+                )
+                tasks.append(forward_anim_task)
+
+
         audio_out: _AudioOutput | None = None
         if audio_output is not None:
             logger.info(f"[agent_activity] audio_output is not None")
@@ -1224,13 +1233,6 @@ class AgentActivity(RecognitionHooks):
 
             audio_out.first_frame_fut.add_done_callback(_on_first_frame)
 
-            # 애니메이션 데이터 출력 처리
-            if self._session.output.animation is not None and stf_gen_data is not None:
-                forward_anim_task, anim_out = perform_animation_forwarding(
-                    animation_output=self._session.output.animation,
-                    stf_output=stf_gen_data.anim_ch
-                )
-                tasks.append(forward_anim_task)
         else:
             logger.info(f"[agent_activity] audio_output is None")
             text_out.first_text_fut.add_done_callback(_on_first_frame)

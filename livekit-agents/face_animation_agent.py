@@ -20,7 +20,7 @@ from livekit.agents import (
 from livekit.plugins import deepgram, openai, silero, elevenlabs
 
 # STF 모듈 임포트 및 기본 URL 정의
-from livekit.agents.stf import FaceAnimatorSTF
+from livekit.agents.stf import FaceAnimatorSTF, FaceAnimatorSTFTriton
 from livekit.agents.voice.agent import Agent
 from livekit.agents.voice.agent_session import AgentSession
 from livekit.agents.voice.avatar import DataStreamAudioOutput
@@ -37,7 +37,7 @@ class FaceAgent(Agent):
                 "당신은 LiveKit에서 만든 음성 도우미입니다. 사용자와의 인터페이스는 음성으로 이루어집니다. "
                 "짧고 간결한 응답을 사용하고, 발음할 수 없는 문장 부호 사용을 피하세요."
             ),
-            stf=FaceAnimatorSTF(chunk_duration_sec=1.0),  
+            stf=FaceAnimatorSTFTriton(chunk_duration_sec=1.0),  
         )
 
     async def on_enter(self): 
@@ -64,7 +64,7 @@ async def entrypoint(ctx: JobContext):
         vad=ctx.proc.userdata["vad"],
         # stt=openai.STT(model="gpt-4o-mini-transcribe"),  # OpenAI Whisper STT 모델 사용
         stt=deepgram.STT(model="nova-2-general", language="ko"),
-        llm=openai.LLM(model="gpt-4o-mini"),
+        llm=openai.LLM(model="gpt-4.1-nano"),
         # tts=openai.TTS(model="gpt-4o-mini-tts", voice="alloy"),  # 음성 기본 설정 
         tts=elevenlabs.TTS(
                 voice_id="SHi5MVTovxhdsNpOHkyG",
