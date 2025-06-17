@@ -4,16 +4,20 @@ import asyncio
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterable, AsyncIterator, Awaitable
 from dataclasses import dataclass
-from typing import Callable, Literal, Optional, Union, TYPE_CHECKING
+from typing import Callable, Literal, Optional, Union
 
 from livekit import rtc
 
 from .. import llm, stt
 from ..log import logger
 from ..types import NOT_GIVEN, NotGivenOr
+from .agent import ModelSettings
 
+# TYPE_CHECKING 임포트 추가
+from typing import TYPE_CHECKING
 if TYPE_CHECKING:
-    from .agent import ModelSettings
+    from ..stf import AnimationData
+
 
 # TODO(theomonnom): can those types be simplified?
 STTNode = Callable[
@@ -239,26 +243,8 @@ class VideoOutput(ABC):
             self._next_in_chain.on_detached()
 
 
-# AnimationData는 STF 블렌드쉐입 데이터로, NumPy 배열을 직렬화해서 전송하기 위한 래퍼 클래스입니다.
-class AnimationData:
-    """애니메이션 데이터 클래스 - 얼굴 블렌드쉐입 데이터를 나타냅니다."""
-    
-    def __init__(self, data: bytes, num_features: int = 52, timestamp_us: int = 0, segment_id: str = "") -> None:
-        self.data = data  # 직렬화된 블렌드쉐입 데이터
-        self.num_features = num_features  # 블렌드쉐입 특성의 개수
-        self.timestamp_us = timestamp_us  # 마이크로초 단위의 타임스탬프
-        self.segment_id = segment_id  # 세그먼트 ID
-    
-    @classmethod
-    def from_numpy(cls, arr, timestamp_us: int = 0, segment_id: str = ""):
-        """NumPy 배열에서 AnimationData 객체 생성"""
-        import numpy as np
-        # NumPy 배열을 직렬화
-        data = np.array(arr, dtype=np.float32).tobytes()
-        return cls(data=data, num_features=len(arr), timestamp_us=timestamp_us, segment_id=segment_id)
-
-
-# AnimationDataOutput은 RTF에서 생성된 블렌드쉐입 애니메이션 데이터를 처리하기 위한 인터페이스입니다.
+# AnimationDataOutput은 STF에서 생성된 블렌드쉐입 애니메이션 데이터를 처리하기 위한 인터페이스입니다.
+# (AnimationData 클래스는 stf 모듈로 이동됨)
 class AnimationDataOutput(ABC):
     """STF(Speech-To-Face)에서 생성된 애니메이션 데이터를 처리하는 추상 클래스입니다."""
     
@@ -266,7 +252,7 @@ class AnimationDataOutput(ABC):
         self._next_in_chain = next_in_chain
     
     @abstractmethod
-    async def capture_frame(self, data: AnimationData) -> None:
+    async def capture_frame(self, data: "AnimationData") -> None:
         """애니메이션 프레임 데이터를 캡처합니다."""
         pass
     

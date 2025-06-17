@@ -385,6 +385,11 @@ class AgentActivity(RecognitionHooks):
                 self.tts.on("error", self._on_error)
                 self.tts.prewarm()
 
+            # if isinstance(self.stf, stf.STF):
+            #     self.stf.on("metrics_collected", self._on_metrics_collected)
+            #     self.stf.on("error", self._on_error)
+            #     self.stf.prewarm()
+
             if isinstance(self.vad, vad.VAD):
                 self.vad.on("metrics_collected", self._on_metrics_collected)
 
@@ -1200,7 +1205,7 @@ class AgentActivity(RecognitionHooks):
             )
             tasks.append(tts_task)
 
-            if self.stf is not None and tts_gen_data is not None:
+            if self._session.output.animation is not None and tts_gen_data is not None:
                 # 오디오 스트림을 복제하여 STF에 전달
                 tts_audio_for_stf, tts_audio_for_output = utils.aio.itertools.tee(tts_gen_data.audio_ch, 2)
                 
@@ -1515,6 +1520,8 @@ class AgentActivity(RecognitionHooks):
         )
 
         audio_output = self._session.output.audio if self._session.output.audio_enabled else None
+        animation_output = self._session.output.animation if self._session.output.animation_enabled else None
+
         text_output = (
             self._session.output.transcription
             if self._session.output.transcription_enabled
@@ -1565,6 +1572,23 @@ class AgentActivity(RecognitionHooks):
                             if asyncio.iscoroutine(realtime_audio)
                             else realtime_audio
                         )
+                        
+                        # STF 애니메이션 처리 - pipeline과 동일한 방식으로 수정
+                        if animation_output is not None and realtime_audio_result is not None:
+                            # 오디오 스트림을 복제하여 STF에 전달
+                            audio_for_stf, audio_for_output = utils.aio.itertools.tee(realtime_audio_result, 2)
+                            
+                            # STF 처리 (오디오 → 애니메이션 데이터)
+                            stf_task, stf_gen_data = perform_stf_inference(
+                                node=self._agent.stf_node,
+                                input=audio_for_stf,
+                                model_settings=model_settings,
+                            )
+                            forward_tasks.append(stf_task)
+                            
+                            # 오디오 출력용 스트림 업데이트
+                            realtime_audio_result = audio_for_output
+                            
                         if realtime_audio_result is not None:
                             forward_task, audio_out = perform_audio_forwarding(
                                 audio_output=audio_output, tts_output=realtime_audio_result
@@ -1572,25 +1596,13 @@ class AgentActivity(RecognitionHooks):
                             forward_tasks.append(forward_task)
                             audio_out.first_frame_fut.add_done_callback(_on_first_frame)
 
-                            # STF 애니메이션 처리
-                            if self.stf is not None:
-                                audio_for_stf, audio_for_output = utils.aio.itertools.tee(realtime_audio, 2)
-                                
-                                # STF 처리
-                                stf_task, stf_gen_data = perform_stf_inference(
-                                    node=self._agent.stf_node,
-                                    input=audio_for_stf,
-                                    model_settings=model_settings,
-                                )
-                                forward_tasks.append(stf_task)
-                                
-                                # 애니메이션 데이터 출력
-                                if self._session.output.animation is not None:
-                                    forward_anim_task, anim_out = perform_animation_forwarding(
-                                        animation_output=self._session.output.animation,
-                                        stf_output=stf_gen_data.anim_ch
-                                    )
-                                    forward_tasks.append(forward_anim_task)
+                        # 애니메이션 데이터 출력
+                        if animation_output is not None:
+                            forward_anim_task, anim_out = perform_animation_forwarding(
+                                animation_output=animation_output,
+                                stf_output=stf_gen_data.anim_ch
+                            )
+                            forward_tasks.append(forward_anim_task)
                     elif text_out is not None:
                         text_out.first_text_fut.add_done_callback(_on_first_frame)
 
@@ -1656,6 +1668,9 @@ class AgentActivity(RecognitionHooks):
                     self._rt_session.truncate(
                         message_id=msg_id, audio_end_ms=int(playback_position * 1000)
                     )
+                if animation_output is not None:
+                    animation_output.clear_buffer()
+                    logger.debug(f"[agent_activity] 애니메이션 데이터 전송 중단: interrupted={True}")
 
                 if forwarded_text:
                     msg = llm.ChatMessage(
@@ -1794,3 +1809,7 @@ class AgentActivity(RecognitionHooks):
     @property
     def tts(self) -> tts.TTS | None:
         return self._agent.tts if is_given(self._agent.tts) else self._session.tts
+    
+    @property
+    def stf(self) -> stf.STF | None:
+        return self._agent.stf if is_given(self._agent.stf) else self._session.stf

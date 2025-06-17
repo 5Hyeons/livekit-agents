@@ -20,11 +20,10 @@ from livekit.agents import (
 from livekit.plugins import deepgram, openai, silero, elevenlabs
 
 # STF 모듈 임포트 및 기본 URL 정의
-from livekit.agents.stf import FaceAnimatorSTF, FaceAnimatorSTFTriton
+from livekit.agents.stf import FaceAnimatorSTFTriton
 from livekit.agents.voice.agent import Agent
 from livekit.agents.voice.agent_session import AgentSession
-from livekit.agents.voice.avatar import DataStreamAudioOutput
-from livekit.agents.voice.room_io.room_io import RoomInputOptions, RoomOutputOptions, RoomIO
+from livekit.agents.voice.room_io.room_io import RoomInputOptions, RoomOutputOptions
 
 load_dotenv()  # .env 파일에서 환경 변수 로드
 logger = logging.getLogger("face-animation-agent")
@@ -42,7 +41,7 @@ class FaceAgent(Agent):
 
     async def on_enter(self): 
         logger.info("FaceAgent on_enter")
-        self.session.generate_reply(instructions="사용자에게 흥미로운 이야기 1문장 건네는 것으로 인사를 시작해.") 
+        self.session.generate_reply(instructions="사용자에게 흥미롭고 아주 긴 1문장 건네는 것으로 시작해.") 
         # self.session.generate_reply(instructions="사용자에게 '안녕하세요! 반갑습니다.' 라고 해.'") 
 
 
@@ -65,18 +64,19 @@ async def entrypoint(ctx: JobContext):
         # stt=openai.STT(model="gpt-4o-mini-transcribe"),  # OpenAI Whisper STT 모델 사용
         stt=deepgram.STT(model="nova-2-general", language="ko"),
         llm=openai.LLM(model="gpt-4.1-nano"),
-        # tts=openai.TTS(model="gpt-4o-mini-tts", voice="alloy"),  # 음성 기본 설정 
-        tts=elevenlabs.TTS(
-                voice_id="SHi5MVTovxhdsNpOHkyG",
-                model="eleven_turbo_v2_5",
-                voice_settings=elevenlabs.VoiceSettings(
-                    stability=0.5,
-                    similarity_boost=0.75,
-                    style=0.0,
-                    speed=1.0,
-                ),
-                encoding="mp3_44100_32",
-            ),
+        # llm=openai.realtime.RealtimeModel(model="gpt-4o-realtime-preview-2025-06-03"),
+        tts=openai.TTS(model="gpt-4o-mini-tts", voice="alloy"),  # 음성 기본 설정 
+        # tts=elevenlabs.TTS(
+        #         voice_id="SHi5MVTovxhdsNpOHkyG",
+        #         model="eleven_turbo_v2_5",
+        #         voice_settings=elevenlabs.VoiceSettings(
+        #             stability=0.5,
+        #             similarity_boost=0.75,
+        #             style=0.0,
+        #             speed=1.0,
+        #         ),
+        #         encoding="mp3_44100_32",
+        #     ),
     )
 
     room_input_options = RoomInputOptions(
@@ -88,12 +88,10 @@ async def entrypoint(ctx: JobContext):
     )
     # RoomIO 옵션 설정 (애니메이션 데이터 출력 활성화)
     room_output_options = RoomOutputOptions(
-        video_enabled=False,          # 비디오 출력 비활성화
         audio_enabled=True,          # 오디오 출력 비활성화 (DataStream으로 대체)
         transcription_enabled=True,   # 텍스트 전사 출력
         # transcription_enabled=False,   # 텍스트 전사 비활성화
         animation_enabled=True,       # 애니메이션 데이터 출력 활성화
-        # animation_enabled=False,       # 애니메이션 데이터 출력 비활성화
         sync_transcription=True,
     )
 

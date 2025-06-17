@@ -521,6 +521,13 @@ class Agent:
             NotGivenOr[tts.TTS | None]: An optional TTS component for generating audio output.
         """  # noqa: E501
         return self._tts
+    
+    @property
+    def stf(self) -> NotGivenOr[stf.STF | None]:
+        """
+        Retrieves the Face Animation component for the agent.
+        """
+        return self._stf
 
     @property
     def mcp_servers(self) -> NotGivenOr[list[mcp.MCPServer] | None]:

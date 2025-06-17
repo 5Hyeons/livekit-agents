@@ -1,4 +1,4 @@
-from .stf import STF, FaceAnimatorSTF
-from .stf_triton import STFTriton, FaceAnimatorSTFTriton
+from .stf import STF, FaceAnimatorSTF, FaceAnimatorSTFTriton
+from .animation_data import AnimationData
 
-__all__ = ["STF", "FaceAnimatorSTF", "STFTriton", "FaceAnimatorSTFTriton"] 
+__all__ = ["STF", "FaceAnimatorSTF", "FaceAnimatorSTFTriton", "AnimationData"] 

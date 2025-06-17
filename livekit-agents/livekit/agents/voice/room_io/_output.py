@@ -19,6 +19,11 @@ from ...types import (
     ATTRIBUTE_ANIMATION_INTERRUPTED,
 )
 from .. import io
+
+# TYPE_CHECKING 임포트 추가
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from ...stf import AnimationData
 from ..transcription import find_micro_track_id
 
 
@@ -463,7 +468,7 @@ class _ParticipantAnimationOutput(io.AnimationDataOutput):
     def _reset_state(self) -> None:
         self._current_id = utils.shortuuid("ANIM_")
         self._capturing = False
-        self._latest_data: io.AnimationData | None = None
+        self._latest_data: "AnimationData" | None = None
 
     async def _create_writer(self, attributes: dict[str, str] | None = None) -> rtc.ByteStreamWriter:
         assert self._participant_identity is not None, "participant_identity is not set"
@@ -483,7 +488,7 @@ class _ParticipantAnimationOutput(io.AnimationDataOutput):
             attributes=attributes,
         )
 
-    async def capture_frame(self, data: io.AnimationData) -> None:
+    async def capture_frame(self, data: "AnimationData") -> None:
         """애니메이션 프레임 데이터를 캡처합니다."""
         if self._participant_identity is None:
             logger.warning("[ANIM_OUTPUT_SIMPLE] 대상 참가자가 없어 애니메이션 데이터를 전송할 수 없습니다.")

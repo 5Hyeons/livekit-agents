@@ -12,7 +12,7 @@ from pydantic import ValidationError
 
 from livekit import rtc
 
-from .. import debug, llm, utils
+from .. import debug, llm, utils, stf
 from ..llm import (
     ChatChunk,
     ChatContext,
@@ -162,7 +162,7 @@ def perform_tts_inference(
 @dataclass
 class _STFGenerationData:
     """STF 생성 데이터."""
-    anim_ch: aio.Chan[io.AnimationData]
+    anim_ch: aio.Chan[stf.AnimationData]
 
 
 def perform_stf_inference(
@@ -183,7 +183,7 @@ def perform_stf_inference(
         tuple[asyncio.Task, _STFGenerationData]: 
             STF 생성 작업과 STF 생성 데이터를 포함하는 튜플
     """
-    anim_ch = aio.Chan[io.AnimationData]()
+    anim_ch = aio.Chan[stf.AnimationData]()
     out = _STFGenerationData(anim_ch=anim_ch)
     task = asyncio.create_task(_stf_inference_task(node, input, anim_ch, model_settings))
     return task, out
@@ -193,7 +193,7 @@ def perform_stf_inference(
 async def _stf_inference_task(
     node: Any,
     input: AsyncIterable[rtc.AudioFrame],
-    anim_ch: aio.Chan[io.AnimationData],
+    anim_ch: aio.Chan[stf.AnimationData],
     model_settings: "ModelSettings",
 ) -> None:
     """
@@ -768,14 +768,14 @@ def truncate_message(*, message: str, played_duration: float) -> str:
 @dataclass
 class _AnimationOutput:
     """애니메이션 데이터 출력 클래스"""
-    animation: list[io.AnimationData]
+    animation: list[stf.AnimationData]
     first_frame_fut: asyncio.Future
 
 
 def perform_animation_forwarding(
     *,
     animation_output: io.AnimationDataOutput,
-    stf_output: AsyncIterable[io.AnimationData],
+    stf_output: AsyncIterable[stf.AnimationData],
 ) -> tuple[asyncio.Task, _AnimationOutput]:
     """
     STF에서 생성된 애니메이션 데이터를 출력으로 전달합니다.
@@ -796,7 +796,7 @@ def perform_animation_forwarding(
 @utils.log_exceptions(logger=logger)
 async def _animation_forwarding_task(
     animation_output: io.AnimationDataOutput,
-    stf_output: AsyncIterable[io.AnimationData],
+    stf_output: AsyncIterable[stf.AnimationData],
     out: _AnimationOutput,
 ) -> None:
     """
