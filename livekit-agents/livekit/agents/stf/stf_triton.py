@@ -15,7 +15,7 @@ import uuid
 
 from ..log import logger
 from ..utils import aio
-from ..voice.io import AnimationData
+from .animation_data import AnimationData
 
 
 class STFTritonStream:

@@ -82,17 +82,17 @@ async def entrypoint(ctx: JobContext):
     room_input_options = RoomInputOptions(
         audio_enabled=True,
         video_enabled=False,
-        text_enabled=True,
+        text_enabled=False,
         # text_enabled=False,
         participant_identity=participant.identity,
     )
     # RoomIO 옵션 설정 (애니메이션 데이터 출력 활성화)
     room_output_options = RoomOutputOptions(
-        audio_enabled=True,          # 오디오 출력 비활성화 (DataStream으로 대체)
+        audio_enabled=False,          # 오디오 출력 비활성화 (AnimationData에 포함됨)
         transcription_enabled=True,   # 텍스트 전사 출력
         # transcription_enabled=False,   # 텍스트 전사 비활성화
         animation_enabled=True,       # 애니메이션 데이터 출력 활성화
-        sync_transcription=True,
+        sync_transcription=False,
     )
 
     logger.info(f"애니메이션 데이터 스트리밍을 활성화했습니다. 대상: {participant.identity}")

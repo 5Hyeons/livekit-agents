@@ -27,6 +27,7 @@ TOPIC_TRANSCRIPTION = "lk.transcription"
 
 TOPIC_ANIMATION_STREAM = "lk.animation_stream"
 ATTRIBUTE_ANIMATION_SEGMENT_ID = "lk.animation_segment_id"
+ATTRIBUTE_ANIMATION_SAMPLE_RATE = "lk.animation_sample_rate"
 ATTRIBUTE_ANIMATION_FINAL = "lk.animation_final"
 ATTRIBUTE_ANIMATION_INTERRUPTED = "lk.animation_interrupted"
 

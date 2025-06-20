@@ -11,7 +11,12 @@ import numpy as np
 from livekit import rtc
 
 from ... import utils
-from ..io import AnimationData, AnimationDataOutput
+from ..io import AnimationDataOutput
+
+# TYPE_CHECKING 임포트 추가
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from ...stf import AnimationData
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +44,7 @@ class ByteStreamAnimationOutput(AnimationDataOutput):
         self._frame_index = 0
         self._tasks: set[asyncio.Task] = set()
 
-    async def capture_frame(self, data: AnimationData) -> None:
+    async def capture_frame(self, data: "AnimationData") -> None:
         """애니메이션 프레임을 캡처하고 대상에게 스트리밍합니다."""
         
         if not self._stream_writer:

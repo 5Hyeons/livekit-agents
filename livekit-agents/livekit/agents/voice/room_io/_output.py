@@ -17,6 +17,7 @@ from ...types import (
     ATTRIBUTE_ANIMATION_SEGMENT_ID,
     ATTRIBUTE_ANIMATION_FINAL,
     ATTRIBUTE_ANIMATION_INTERRUPTED,
+    ATTRIBUTE_ANIMATION_SAMPLE_RATE,
 )
 from .. import io
 
@@ -469,6 +470,7 @@ class _ParticipantAnimationOutput(io.AnimationDataOutput):
         self._current_id = utils.shortuuid("ANIM_")
         self._capturing = False
         self._latest_data: "AnimationData" | None = None
+        self._sample_rate = 48000
 
     async def _create_writer(self, attributes: dict[str, str] | None = None) -> rtc.ByteStreamWriter:
         assert self._participant_identity is not None, "participant_identity is not set"
@@ -481,6 +483,7 @@ class _ParticipantAnimationOutput(io.AnimationDataOutput):
             }
         self._current_id = utils.shortuuid("ANIM_")
         attributes[ATTRIBUTE_ANIMATION_SEGMENT_ID] = self._current_id
+        attributes[ATTRIBUTE_ANIMATION_SAMPLE_RATE] = str(self._sample_rate)
         
         return await self._room.local_participant.stream_bytes(
             name=writer_id,
@@ -502,6 +505,7 @@ class _ParticipantAnimationOutput(io.AnimationDataOutput):
             self._capturing = True
 
         self._latest_data = data
+        self._sample_rate = data.sample_rate
 
         if self._is_delta_stream:
             if self._writer is None:
