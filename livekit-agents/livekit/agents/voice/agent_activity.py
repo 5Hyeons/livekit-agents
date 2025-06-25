@@ -1315,6 +1315,7 @@ class AgentActivity(RecognitionHooks):
             self._agent._chat_ctx.insert(_tools_messages)
 
         if speech_handle.interrupted:
+            logger.info(f"[agent_activity] speech_handle.interrupted !!!!!!!!!!!!!")
             await utils.aio.cancel_and_wait(*tasks)
 
             forwarded_text = text_out.text if text_out else ""
