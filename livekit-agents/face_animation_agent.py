@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+from datetime import datetime
 
 # Set higher logging level for Numba before other configurations
 logging.getLogger('numba').setLevel(logging.WARNING)
@@ -96,6 +97,22 @@ async def entrypoint(ctx: JobContext):
     )
 
     logger.info(f"애니메이션 데이터 스트리밍을 활성화했습니다. 대상: {participant.identity}")
+    
+    # Agent의 identity 로깅
+    agent_identity = ctx.room.local_participant.identity
+    logger.info(f"Agent Identity: {agent_identity}")
+
+    # RPC 메서드 등록 - 현재 시간 반환
+    @ctx.room.local_participant.register_rpc_method("get_current_time")
+    async def get_current_time(data: rtc.RpcInvocationData) -> str:
+        """현재 시간을 반환하는 RPC 메서드"""
+        logger.info(f"RPC 'get_current_time' 호출됨! 호출자: {data.caller_identity}")
+        current_time = datetime.now()
+        formatted_time = current_time.strftime("%Y년 %m월 %d일 %H시 %M분 %S초")
+        logger.info(f"RPC 응답 생성: {formatted_time}")
+        return formatted_time
+    
+    logger.info("RPC 메서드 'get_current_time' 등록 완료")
 
     # session.output.audio = DataStreamAudioOutput(
     #         room=ctx.room,
