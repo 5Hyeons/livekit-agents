@@ -102,18 +102,6 @@ async def entrypoint(ctx: JobContext):
     agent_identity = ctx.room.local_participant.identity
     logger.info(f"Agent Identity: {agent_identity}")
 
-    # RPC 메서드 등록 - 현재 시간 반환
-    @ctx.room.local_participant.register_rpc_method("get_current_time")
-    async def get_current_time(data: rtc.RpcInvocationData) -> str:
-        """현재 시간을 반환하는 RPC 메서드"""
-        logger.info(f"RPC 'get_current_time' 호출됨! 호출자: {data.caller_identity}")
-        current_time = datetime.now()
-        formatted_time = current_time.strftime("%Y년 %m월 %d일 %H시 %M분 %S초")
-        logger.info(f"RPC 응답 생성: {formatted_time}")
-        return formatted_time
-    
-    logger.info("RPC 메서드 'get_current_time' 등록 완료")
-
     # session.output.audio = DataStreamAudioOutput(
     #         room=ctx.room,
     #         destination_identity=participant.identity,
@@ -125,6 +113,26 @@ async def entrypoint(ctx: JobContext):
         room_input_options=room_input_options,
         room_output_options=room_output_options
     )
+    
+    # RPC 메서드 등록 - 현재 시간을 음성으로 말하기 (session.start 후에 등록)
+    @ctx.room.local_participant.register_rpc_method("get_current_time")
+    async def get_current_time(data: rtc.RpcInvocationData) -> str:
+        """현재 시간을 음성으로 말하는 RPC 메서드"""
+        logger.info(f"RPC 'get_current_time' 호출됨! 호출자: {data.caller_identity}")
+        current_time = datetime.now()
+        formatted_time = current_time.strftime("%Y년 %m월 %d일 %H시 %M분 %S초")
+        
+        # Agent가 현재 시간을 음성으로 말하기
+        time_message = f"현재 시간은 {formatted_time}입니다."
+        logger.info(f"Agent가 음성으로 말할 내용: {time_message}")
+        
+        # session.say를 사용해서 즉시 음성으로 응답
+        session.say(time_message, allow_interruptions=True)
+        
+        logger.info(f"RPC 응답 완료: {formatted_time}")
+        return "시간 안내를 음성으로 제공했습니다."
+    
+    logger.info("RPC 메서드 'get_current_time' 등록 완료")
 
 
 if __name__ == "__main__":

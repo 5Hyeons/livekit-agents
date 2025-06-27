@@ -1073,6 +1073,7 @@ class AgentActivity(RecognitionHooks):
             else None
         )
         audio_output = self._session.output.audio if self._session.output.audio_enabled else None
+        animation_output = self._session.output.animation if self._session.output.animation_enabled else None
 
         await speech_handle.wait_if_not_interrupted(
             [asyncio.ensure_future(speech_handle._wait_for_authorization())]
@@ -1111,8 +1112,14 @@ class AgentActivity(RecognitionHooks):
         def _on_first_frame(_: asyncio.Future[None]) -> None:
             self._session._update_agent_state("speaking")
 
-        if audio_output is None:
-            # update the agent state based on text if no audio output
+        # TTS 및 STF 처리 변수 초기화
+        tts_gen_data: _TTSGenerationData | None = None
+        stf_task: asyncio.Task | None = None
+        stf_gen_data: _STFGenerationData | None = None
+        tee_audio: utils.aio.itertools.Tee | None = None
+
+        if audio_output is None and animation_output is None:
+            # update the agent state based on text if no audio/animation output
             if text_out is not None:
                 text_out.first_text_fut.add_done_callback(_on_first_frame)
         else:
@@ -1125,18 +1132,47 @@ class AgentActivity(RecognitionHooks):
                 )
                 tasks.append(tts_task)
 
-                forward_task, audio_out = perform_audio_forwarding(
-                    audio_output=audio_output, tts_output=tts_gen_data.audio_ch
-                )
-                tasks.append(forward_task)
+                # STF 처리 (애니메이션 출력이 활성화된 경우)
+                if animation_output is not None and tts_gen_data is not None:
+                    # 오디오 스트림을 복제하여 STF에 전달
+                    tee_audio = utils.aio.itertools.tee(tts_gen_data.audio_ch, 2)
+                    tts_audio_for_stf, tts_audio_for_output = tee_audio
+                    
+                    # STF 처리 (오디오 → 애니메이션 데이터)
+                    stf_task, stf_gen_data = perform_stf_inference(
+                        node=self._agent.stf_node,
+                        input=tts_audio_for_stf,
+                        model_settings=model_settings,
+                    )
+                    tasks.append(stf_task)
+                    
+                    # 오디오 출력용 스트림 업데이트
+                    tts_gen_data.audio_ch = tts_audio_for_output
+
+                # 오디오 포워딩 (오디오 출력이 활성화된 경우)
+                if audio_output is not None:
+                    forward_task, audio_out = perform_audio_forwarding(
+                        audio_output=audio_output, tts_output=tts_gen_data.audio_ch
+                    )
+                    tasks.append(forward_task)
+                    audio_out.first_frame_fut.add_done_callback(_on_first_frame)
+                    
+                # 애니메이션 포워딩 (애니메이션 출력이 활성화되고 오디오 출력이 없는 경우)
+                elif animation_output is not None and stf_gen_data is not None:
+                    forward_anim_task, anim_out = perform_animation_forwarding(
+                        animation_output=animation_output,
+                        stf_output=stf_gen_data.anim_ch
+                    )
+                    tasks.append(forward_anim_task)
+                    anim_out.first_frame_fut.add_done_callback(_on_first_frame)
             else:
                 # use the provided audio
-                forward_task, audio_out = perform_audio_forwarding(
-                    audio_output=audio_output, tts_output=audio
-                )
-                tasks.append(forward_task)
-
-            audio_out.first_frame_fut.add_done_callback(_on_first_frame)
+                if audio_output is not None:
+                    forward_task, audio_out = perform_audio_forwarding(
+                        audio_output=audio_output, tts_output=audio
+                    )
+                    tasks.append(forward_task)
+                    audio_out.first_frame_fut.add_done_callback(_on_first_frame)
 
         await speech_handle.wait_if_not_interrupted([*tasks])
 
@@ -1154,6 +1190,9 @@ class AgentActivity(RecognitionHooks):
 
         if tee is not None:
             await tee.aclose()
+            
+        if tee_audio is not None:
+            await tee_audio.aclose()
 
         if add_to_chat_ctx:
             msg = self._agent._chat_ctx.add_message(
