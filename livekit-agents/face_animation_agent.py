@@ -65,18 +65,18 @@ async def entrypoint(ctx: JobContext):
         stt=deepgram.STT(model="nova-2-general", language="ko"),
         llm=openai.LLM(model="gpt-4.1-nano"),
         # llm=openai.realtime.RealtimeModel(model="gpt-4o-realtime-preview-2025-06-03"),
-        tts=openai.TTS(model="gpt-4o-mini-tts", voice="alloy"),  # 음성 기본 설정 
-        # tts=elevenlabs.TTS(
-        #         voice_id="SHi5MVTovxhdsNpOHkyG",
-        #         model="eleven_turbo_v2_5",
-        #         voice_settings=elevenlabs.VoiceSettings(
-        #             stability=0.5,
-        #             similarity_boost=0.75,
-        #             style=0.0,
-        #             speed=1.0,
-        #         ),
-        #         encoding="mp3_44100_32",
-        #     ),
+        # tts=openai.TTS(model="gpt-4o-mini-tts", voice="alloy"),  # 음성 기본 설정 
+        tts=elevenlabs.TTS(
+                voice_id="SHi5MVTovxhdsNpOHkyG",
+                model="eleven_turbo_v2_5",
+                voice_settings=elevenlabs.VoiceSettings(
+                    stability=0.5,
+                    similarity_boost=0.75,
+                    style=0.0,
+                    speed=1.0,
+                ),
+                encoding="mp3_44100_32",
+            ),
     )
 
     room_input_options = RoomInputOptions(
@@ -90,7 +90,6 @@ async def entrypoint(ctx: JobContext):
     room_output_options = RoomOutputOptions(
         audio_enabled=False,          # 오디오 출력 비활성화 (AnimationData에 포함됨)
         transcription_enabled=True,   # 텍스트 전사 출력
-        # transcription_enabled=False,   # 텍스트 전사 비활성화
         animation_enabled=True,       # 애니메이션 데이터 출력 활성화
         sync_transcription=False,
     )
