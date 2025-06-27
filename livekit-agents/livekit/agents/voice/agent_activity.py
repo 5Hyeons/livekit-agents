@@ -1227,6 +1227,7 @@ class AgentActivity(RecognitionHooks):
         stf_task: asyncio.Task | None = None
         stf_gen_data: _STFGenerationData | None = None
 
+        tee_audio: utils.aio.itertools.Tee | None = None
         if audio_output is not None or animation_output is not None:
             tts_task, tts_gen_data = perform_tts_inference(
                 node=self._agent.tts_node,
@@ -1237,7 +1238,8 @@ class AgentActivity(RecognitionHooks):
 
             if animation_output is not None and tts_gen_data is not None:
                 # 오디오 스트림을 복제하여 STF에 전달
-                tts_audio_for_stf, tts_audio_for_output = utils.aio.itertools.tee(tts_gen_data.audio_ch, 2)
+                tee_audio = utils.aio.itertools.tee(tts_gen_data.audio_ch, 2)
+                tts_audio_for_stf, tts_audio_for_output = tee_audio
                 
                 # STF 처리 (오디오 → 애니메이션 데이터)
                 stf_task, stf_gen_data = perform_stf_inference(
@@ -1259,6 +1261,8 @@ class AgentActivity(RecognitionHooks):
             logger.info(f"[agent_activity] speech_handle.interrupted")
             await utils.aio.cancel_and_wait(*tasks)
             await tee.aclose()
+            if tee_audio is not None:
+                await tee_audio.aclose()
             return
 
         reply_started_at = time.time()
@@ -1329,6 +1333,8 @@ class AgentActivity(RecognitionHooks):
             logger.info(f"[agent_activity] speech_handle.interrupted !!!!!!!!!!!!!")
             await utils.aio.cancel_and_wait(*tasks)
             await tee.aclose()
+            if tee_audio is not None:
+                await tee_audio.aclose()
 
             forwarded_text = text_out.text if text_out else ""
             # if the audio playout was enabled, clear the buffer
@@ -1390,6 +1396,8 @@ class AgentActivity(RecognitionHooks):
 
         speech_handle._mark_playout_done()  # mark the playout done before waiting for the tool execution  # noqa: E501
         await tee.aclose()
+        if tee_audio is not None:
+            await tee_audio.aclose()
 
         await exe_task
 
