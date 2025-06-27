@@ -257,6 +257,7 @@ async def _text_forwarding_task(
     source: AsyncIterable[str],
     out: _TextOutput,
 ) -> None:
+    await asyncio.sleep(2.4)
     try:
         async for delta in source:
             out.text += delta
@@ -265,6 +266,8 @@ async def _text_forwarding_task(
 
             if not out.first_text_fut.done():
                 out.first_text_fut.set_result(None)
+
+            await asyncio.sleep(1/5)
     finally:
         if isinstance(source, _ACloseable):
             await source.aclose()
