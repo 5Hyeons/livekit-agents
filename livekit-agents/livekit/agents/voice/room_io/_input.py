@@ -187,6 +187,9 @@ class _ParticipantInputStream(Generic[T], ABC):
             or self._publication.sid != publication.sid
             or participant.identity != self._participant_identity
         ):
+            logger.info(f"track not available: {publication.track}")
+            logger.info(f"participant identity: {self._participant_identity}, {participant.identity}")
+            logger.info(f"track source: {publication.source}, {self._accepted_sources}")
             return
 
         self._close_stream()
@@ -211,6 +214,7 @@ class _ParticipantAudioInputStream(_ParticipantInputStream[rtc.AudioFrame], Audi
     ) -> None:
         _ParticipantInputStream.__init__(
             self, room=room, track_source=rtc.TrackSource.SOURCE_MICROPHONE
+            # self, room=room, track_source=rtc.TrackSource.SOURCE_UNKNOWN
         )
         self._sample_rate = sample_rate
         self._num_channels = num_channels

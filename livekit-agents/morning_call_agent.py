@@ -1,0 +1,143 @@
+import asyncio
+import logging
+from dotenv import load_dotenv
+
+from dataclasses import dataclass
+from duckduckgo_search import DDGS
+
+from livekit.agents import (
+    AutoSubscribe,
+    JobContext,
+    JobProcess,
+    WorkerOptions,
+    cli,
+    function_tool,
+    RunContext,
+    ToolError,
+    Agent,
+    AgentSession,
+)
+from livekit.plugins import deepgram, openai, silero, elevenlabs
+
+# STF 모듈 임포트 및 기본 URL 정의
+from livekit.agents.voice.agent import Agent
+from livekit.agents.voice.agent_session import AgentSession
+from livekit.agents.voice.room_io.room_io import RoomInputOptions, RoomOutputOptions
+
+load_dotenv()  # .env 파일에서 환경 변수 로드
+logger = logging.getLogger("morning-call-agent")
+
+@dataclass
+class AppData:
+    ddgs_client: DDGS
+
+
+class MorningCallAgent(Agent):
+    def __init__(self):
+        super().__init__(
+            instructions=(
+                "당신은 LiveKit에서 만든 음성 도우미입니다. 사용자와의 인터페이스는 음성으로 이루어집니다. "
+                "짧고 간결한 응답을 사용하고, 발음할 수 없는 문장 부호 사용을 피하세요."
+            ),
+        )
+
+    async def on_enter(self): 
+        logger.info("MorningCallAgent on_enter")
+        self.session.generate_reply(instructions="사용자에게 흥미로운 이야기 1문장 건네는 것으로 인사를 시작해.") 
+
+
+    @function_tool
+    async def search_web(self, ctx: RunContext[AppData], query: str):
+        """
+        Performs a web search using the DuckDuckGo search engine.
+        
+
+        Args:
+            query: The search term or question you want to look up online.
+
+        """
+        ddgs_client = ctx.userdata.ddgs_client
+
+        logger.info(f"Searching for {query}")
+
+        # using asyncio.to_thread because the DDGS client is not asyncio compatible
+        search = await asyncio.to_thread(ddgs_client.text, query)
+        if len(search) == 0:
+            raise ToolError("Tell the user that no results were found for the query.")
+
+        return search
+
+
+def prewarm(proc: JobProcess):
+    # VAD 모델 로드
+    proc.userdata["vad"] = silero.VAD.load()
+
+async def entrypoint(ctx: JobContext):
+    logger.info(f"{ctx.room.name} 방에 연결합니다")
+    # 오디오만 구독 (STT 용)
+    await ctx.connect(auto_subscribe=AutoSubscribe.AUDIO_ONLY)
+
+    app_data = AppData(ddgs_client=DDGS())
+
+
+    # 첫 번째 참가자가 연결될 때까지 대기
+    participant = await ctx.wait_for_participant()
+    logger.info(f"{participant.identity} 참가자를 위한 모닝콜 에이전트 시작")
+
+    # AgentSession 생성 (STF 클라이언트 포함)
+    session = AgentSession(
+        vad=ctx.proc.userdata["vad"],
+        # stt=openai.STT(model="gpt-4o-mini-transcribe"),  # OpenAI Whisper STT 모델 사용
+        stt=deepgram.STT(model="nova-2-general", language="ko"),
+        llm=openai.LLM(model="gpt-4o"),
+        # tts=openai.TTS(model="gpt-4o-mini-tts", voice="alloy"),  # 음성 기본 설정 
+        tts=elevenlabs.TTS(
+                voice_id="SHi5MVTovxhdsNpOHkyG",
+                model="eleven_turbo_v2_5",
+                voice_settings=elevenlabs.VoiceSettings(
+                    stability=0.5,
+                    similarity_boost=0.75,
+                    style=0.0,
+                    speed=1.0,
+                ),
+                encoding="mp3_44100_32",
+            ),
+        userdata=app_data,
+    )
+
+    room_input_options = RoomInputOptions(
+        audio_enabled=True,
+        video_enabled=False,
+        text_enabled=True,
+        participant_identity=participant.identity,
+    )
+    # RoomIO 옵션 설정 (애니메이션 데이터 출력 활성화)
+    room_output_options = RoomOutputOptions(
+        video_enabled=False,          # 비디오 출력 비활성화
+        audio_enabled=True,          
+        transcription_enabled=True,   # 텍스트 전사 출력
+        sync_transcription=True,
+    )
+
+    logger.info(f"애니메이션 데이터 스트리밍을 활성화했습니다. 대상: {participant.identity}")
+
+    # session.output.audio = DataStreamAudioOutput(
+    #         room=ctx.room,
+    #         destination_identity=participant.identity,
+    #     )
+    # 세션 시작
+    await session.start(
+        agent=MorningCallAgent(),
+        room=ctx.room,
+        room_input_options=room_input_options,
+        room_output_options=room_output_options
+    )
+
+
+if __name__ == "__main__":
+    cli.run_app(
+        WorkerOptions(
+            entrypoint_fnc=entrypoint,
+            prewarm_fnc=prewarm,
+        ),
+    ) 

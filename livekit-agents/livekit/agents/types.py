@@ -29,6 +29,11 @@ USERDATA_TIMED_TRANSCRIPT = "lk.timed_transcripts"
 """
 The key for the timed transcripts in the audio frame userdata.
 """
+TOPIC_ANIMATION_STREAM = "lk.animation_stream"
+ATTRIBUTE_ANIMATION_SEGMENT_ID = "lk.animation_segment_id"
+ATTRIBUTE_ANIMATION_SAMPLE_RATE = "lk.animation_sample_rate"
+ATTRIBUTE_ANIMATION_FINAL = "lk.animation_final"
+ATTRIBUTE_ANIMATION_INTERRUPTED = "lk.animation_interrupted"
 
 
 _T = TypeVar("_T")

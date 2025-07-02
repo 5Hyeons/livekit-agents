@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import time
+<<<<<<< HEAD
 from collections.abc import AsyncIterable
 from dataclasses import dataclass
 from types import TracebackType
@@ -15,13 +16,18 @@ from typing import (
     Union,
     runtime_checkable,
 )
+=======
+from collections.abc import AsyncIterable, Callable, Coroutine
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Generic, Literal, Protocol, TypeVar, Union, runtime_checkable, Any
+>>>>>>> hans/memorize
 
 from livekit import rtc
 
-from .. import debug, llm, stt, tts, utils, vad
+from .. import debug, llm, stt, tts, stf, utils, vad
 from ..cli import cli
 from ..job import get_job_context
-from ..llm import ChatContext
+from ..llm import ChatContext, mcp
 from ..log import logger
 from ..types import (
     DEFAULT_API_CONNECT_OPTIONS,
@@ -138,6 +144,7 @@ class AgentSession(rtc.EventEmitter[EventTypes], Generic[Userdata_T]):
         vad: NotGivenOr[vad.VAD] = NOT_GIVEN,
         llm: NotGivenOr[llm.LLM | llm.RealtimeModel] = NOT_GIVEN,
         tts: NotGivenOr[tts.TTS] = NOT_GIVEN,
+        stf: NotGivenOr[stf.STF] = NOT_GIVEN,
         mcp_servers: NotGivenOr[list[mcp.MCPServer]] = NOT_GIVEN,
         userdata: NotGivenOr[Userdata_T] = NOT_GIVEN,
         allow_interruptions: bool = True,
@@ -196,7 +203,7 @@ class AgentSession(rtc.EventEmitter[EventTypes], Generic[Userdata_T]):
                 an interruption, only used if stt enabled. Default ``0``.
             min_endpointing_delay (float): Minimum time-in-seconds the agent
                 must wait after a potential end-of-utterance signal (from VAD
-                or an EOU model) before it declares the user’s turn complete.
+                or an EOU model) before it declares the user's turn complete.
                 Default ``0.5`` s.
             max_endpointing_delay (float): Maximum time-in-seconds the agent
                 will wait before terminating the turn. Default ``6.0`` s.
@@ -249,6 +256,7 @@ class AgentSession(rtc.EventEmitter[EventTypes], Generic[Userdata_T]):
         self._vad = vad or None
         self._llm = llm or None
         self._tts = tts or None
+        self._stf = stf or None
         self._mcp_servers = mcp_servers or None
 
         # unrecoverable error counts, reset after agent speaking

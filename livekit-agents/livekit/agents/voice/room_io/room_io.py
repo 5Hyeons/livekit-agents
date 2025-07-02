@@ -17,7 +17,7 @@ from ...types import (
     NotGivenOr,
 )
 from ..events import AgentStateChangedEvent, CloseReason, UserInputTranscribedEvent
-from ..io import AudioInput, AudioOutput, TextOutput, VideoInput
+from ..io import AudioInput, AudioOutput, TextOutput, VideoInput, AnimationDataOutput
 from ..transcription import TranscriptSynchronizer
 from ._pre_connect_audio import PreConnectAudioHandler
 
@@ -28,6 +28,7 @@ if TYPE_CHECKING:
 from ._input import _ParticipantAudioInputStream, _ParticipantVideoInputStream
 from ._output import (
     _ParallelTextOutput,
+    _ParticipantAnimationOutput,
     _ParticipantAudioOutput,
     _ParticipantLegacyTranscriptionOutput,
     _ParticipantTranscriptionOutput,
@@ -95,6 +96,7 @@ class RoomOutputOptions:
     """If not given, default to True."""
     audio_enabled: NotGivenOr[bool] = NOT_GIVEN
     """If not given, default to True."""
+    animation_enabled: bool = False
     audio_sample_rate: int = 24000
     audio_num_channels: int = 1
     audio_publish_options: rtc.TrackPublishOptions = field(
@@ -136,6 +138,7 @@ class RoomIO:
         self._user_tr_output: _ParallelTextOutput | None = None
         self._agent_tr_output: _ParallelTextOutput | None = None
         self._tr_synchronizer: TranscriptSynchronizer | None = None
+        self._animation_output: _ParticipantAnimationOutput | None = None
 
         self._participant_available_fut = asyncio.Future[rtc.RemoteParticipant]()
         self._room_connected_fut = asyncio.Future[None]()
@@ -194,6 +197,14 @@ class RoomIO:
                 track_publish_options=self._output_options.audio_publish_options,
             )
 
+        if self._output_options.animation_enabled:
+            # self._animation_output = self._create_animation_output(self._participant_identity)
+            self._animation_output = _ParticipantAnimationOutput(
+                self._room,
+                participant=self._participant_identity
+            )
+            logger.info("애니메이션 데이터 출력 활성화됨")
+
         if self._output_options.transcription_enabled or not utils.is_given(
             self._output_options.transcription_enabled
         ):
@@ -241,6 +252,10 @@ class RoomIO:
 
         if self.transcription_output:
             self._agent_session.output.transcription = self.transcription_output
+
+        if self.animation_output:
+            self._agent_session.output.animation = self.animation_output
+            logger.info("에이전트 세션에 애니메이션 출력 설정 완료")
 
         self._agent_session.on("agent_state_changed", self._on_agent_state_changed)
         self._agent_session.on("user_input_transcribed", self._on_user_input_transcribed)
@@ -299,6 +314,11 @@ class RoomIO:
         return self._agent_tr_output
 
     @property
+    def animation_output(self) -> AnimationDataOutput | None:
+        """애니메이션 데이터 출력"""
+        return self._animation_output
+
+    @property
     def audio_input(self) -> AudioInput | None:
         return self._audio_input
 
@@ -345,6 +365,8 @@ class RoomIO:
             self._video_input.set_participant(participant_identity)
 
         self._update_transcription_output(self._user_tr_output, participant_identity)
+        # if self._animation_output:
+        #     self._update_animation_output(self._animation_output, participant_identity)
 
     def unset_participant(self) -> None:
         self._participant_identity = None
@@ -354,6 +376,8 @@ class RoomIO:
         if self._video_input:
             self._video_input.set_participant(None)
         self._update_transcription_output(self._user_tr_output, None)
+        # if self._animation_output:
+        #     self._update_animation_output(self._animation_output, None)
 
     @utils.log_exceptions(logger=logger)
     async def _init_task(self) -> None:
@@ -370,6 +394,8 @@ class RoomIO:
         self._update_transcription_output(
             self._agent_tr_output, self._room.local_participant.identity
         )
+        # if self._animation_output:
+        #     self._update_animation_output(self._animation_output, self._room.local_participant.identity)
         if self._audio_output:
             await self._audio_output.start()
 
@@ -388,6 +414,7 @@ class RoomIO:
             self._room_connected_fut.set_result(None)
 
     def _on_participant_connected(self, participant: rtc.RemoteParticipant) -> None:
+        logger.info(f"participant connected: {participant.identity}")
         if self._participant_available_fut.done():
             return
 
@@ -505,3 +532,18 @@ class RoomIO:
                 ),
             ):
                 sink.set_participant(participant_identity)
+
+    def _create_animation_output(
+        self, participant_identity: str | None
+    ) -> _ParticipantAnimationOutput:
+        return _ParticipantAnimationOutput(
+            room=self._room, participant=participant_identity
+        )
+
+    def _update_animation_output(
+        self, output: _ParticipantAnimationOutput | None, participant_identity: str | None
+    ) -> None:
+        if output is None:
+            return
+
+        output.set_participant(participant_identity)

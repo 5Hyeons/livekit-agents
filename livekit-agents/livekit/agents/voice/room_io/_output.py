@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 
 from livekit import rtc
 
@@ -12,8 +13,18 @@ from ...types import (
     ATTRIBUTE_TRANSCRIPTION_SEGMENT_ID,
     ATTRIBUTE_TRANSCRIPTION_TRACK_ID,
     TOPIC_TRANSCRIPTION,
+    TOPIC_ANIMATION_STREAM,
+    ATTRIBUTE_ANIMATION_SEGMENT_ID,
+    ATTRIBUTE_ANIMATION_FINAL,
+    ATTRIBUTE_ANIMATION_INTERRUPTED,
+    ATTRIBUTE_ANIMATION_SAMPLE_RATE,
 )
 from .. import io
+
+# TYPE_CHECKING 임포트 추가
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from ...stf import AnimationData
 from ..transcription import find_micro_track_id
 
 
@@ -417,6 +428,144 @@ class _ParticipantTranscriptionOutput(io.TextOutput):
             return
 
         self._track_id = track.sid
+
+
+class _ParticipantAnimationOutput(io.AnimationDataOutput):
+    """
+    애니메이션 데이터를 브로드캐스트하는 출력 클래스입니다.
+    (수정됨: 스트림을 오랫동안 열어두는 단순화된 버전)
+    """
+
+    def __init__(
+        self,
+        room: rtc.Room,
+        *,
+        participant: rtc.Participant | str | None = None,
+        is_delta_stream: bool = False,
+    ):
+        super().__init__(next_in_chain=None)
+        self._room, self._is_delta_stream = room, is_delta_stream
+        self._participant_identity: str | None = None
+
+        self._close_task: asyncio.Task | None = None # Task for final close
+        self._writer: rtc.ByteStreamWriter | None = None
+        self._frames_count = 0
+        self._start_time = time.time()
+        self._is_closed = False # Flag to indicate if closed
+        self._flush_atask: asyncio.Task | None = None
+
+        self._reset_state()
+        self.set_participant(participant)
+
+    def set_participant(
+        self,
+        participant: rtc.Participant | str | None,
+    ) -> None:
+        self._participant_identity = (
+            participant.identity if isinstance(participant, rtc.Participant) else participant
+        )
+        if self._participant_identity is None:
+            return
+
+        self.flush()
+        self._reset_state()
+        logger.info(f"[_ParticipantAnimationOutput] 초기화: 대상 참가자={self._participant_identity}")
+
+    def _reset_state(self) -> None:
+        self._current_id = utils.shortuuid("ANIM_")
+        self._capturing = False
+        self._latest_data: "AnimationData" | None = None
+        self._sample_rate = 48000
+
+    async def _create_writer(self, attributes: dict[str, str] | None = None) -> rtc.ByteStreamWriter:
+        assert self._participant_identity is not None, "participant_identity is not set"
+        
+        writer_id = utils.shortuuid("ANIMATION_")
+
+        if not attributes:
+            attributes = {
+                ATTRIBUTE_ANIMATION_FINAL: "false",
+            }
+        self._current_id = utils.shortuuid("ANIM_")
+        attributes[ATTRIBUTE_ANIMATION_SEGMENT_ID] = self._current_id
+        attributes[ATTRIBUTE_ANIMATION_SAMPLE_RATE] = str(self._sample_rate)
+        
+        return await self._room.local_participant.stream_bytes(
+            name=writer_id,
+            topic=TOPIC_ANIMATION_STREAM,
+            attributes=attributes,
+        )
+
+    async def capture_frame(self, data: "AnimationData") -> None:
+        """애니메이션 프레임 데이터를 캡처합니다."""
+        if self._participant_identity is None:
+            logger.warning("[ANIM_OUTPUT_SIMPLE] 대상 참가자가 없어 애니메이션 데이터를 전송할 수 없습니다.")
+            return
+
+        if self._flush_atask and not self._flush_atask.done():
+            await self._flush_atask
+
+        if not self._capturing:
+            self._reset_state()
+            self._capturing = True
+
+        self._latest_data = data
+        self._sample_rate = data.sample_rate
+
+        if self._is_delta_stream:
+            if self._writer is None:
+                self._writer = await self._create_writer()
+            # 애니메이션 데이터 쓰기
+            # logger.debug(f"[ANIM_OUTPUT_SIMPLE] 데이터 쓰기 시도: segment ID={self._current_id}, 프레임 번호={self._frames_count + 1}")
+            await self._writer.write(data.data)
+            self._frames_count += 1
+        else:
+            tmp_writer = await self._create_writer()
+            # logger.debug(f"[ANIM_OUTPUT_SIMPLE] 데이터 쓰기 시도: segment ID={self._current_id}, 프레임 번호={self._frames_count + 1}")
+            await tmp_writer.write(data.data)
+            await tmp_writer.aclose()
+            self._frames_count += 1
+
+    async def _flush_task(self, writer: rtc.ByteStreamWriter | None):
+        attributes = {
+            ATTRIBUTE_ANIMATION_FINAL: "true",
+        }
+        try:
+            if self._room.isconnected():
+                if self._is_delta_stream:
+                    if writer:
+                        await writer.aclose(attributes=attributes)
+                else:
+                    tmp_writer = await self._create_writer(attributes=attributes)
+                    await tmp_writer.write(self._latest_data.data)
+                    await tmp_writer.aclose()
+        except Exception as e:
+            logger.warning("failed to publish animation data", exc_info=e)
+
+    def flush(self) -> None:
+        if self._participant_identity is None or not self._capturing:
+            return
+
+        self._capturing = False
+        curr_writer = self._writer
+        self._writer = None
+        self._flush_atask = asyncio.create_task(self._flush_task(curr_writer))
+
+    async def _clear_buffer_task(self) -> None:
+        attributes = {
+            ATTRIBUTE_ANIMATION_INTERRUPTED: "true",
+        }
+        if self._is_delta_stream:
+            if self._writer:
+                await self._writer.aclose(attributes=attributes)
+                self._writer = None
+        else:
+            tmp_writer = await self._create_writer(attributes=attributes)
+            await tmp_writer.aclose()
+
+    def clear_buffer(self) -> None:
+        self._capturing = False
+        self._flush_atask = asyncio.create_task(self._clear_buffer_task())
 
 
 # Keep this utility private for now

@@ -13,9 +13,15 @@ from ..log import logger
 from ..types import NOT_GIVEN, NotGivenOr
 from .agent import ModelSettings
 
+# TYPE_CHECKING 임포트 추가
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from ..stf import AnimationData
+
+
 # TODO(theomonnom): can those types be simplified?
 STTNode = Callable[
-    [AsyncIterable[rtc.AudioFrame], ModelSettings],
+    [AsyncIterable[rtc.AudioFrame], "ModelSettings"],
     Union[
         Optional[Union[AsyncIterable[Union[stt.SpeechEvent, str]]]],
         Awaitable[Optional[Union[AsyncIterable[Union[stt.SpeechEvent, str]]]]],
@@ -29,7 +35,7 @@ LLMNode = Callable[
     ],
 ]
 TTSNode = Callable[
-    [AsyncIterable[str], ModelSettings],
+    [AsyncIterable[str], "ModelSettings"],
     Union[
         Optional[AsyncIterable[rtc.AudioFrame]],
         Awaitable[Optional[AsyncIterable[rtc.AudioFrame]]],
@@ -237,6 +243,35 @@ class VideoOutput(ABC):
             self._next_in_chain.on_detached()
 
 
+# AnimationDataOutput은 STF에서 생성된 블렌드쉐입 애니메이션 데이터를 처리하기 위한 인터페이스입니다.
+# (AnimationData 클래스는 stf 모듈로 이동됨)
+class AnimationDataOutput(ABC):
+    """STF(Speech-To-Face)에서 생성된 애니메이션 데이터를 처리하는 추상 클래스입니다."""
+    
+    def __init__(self, *, next_in_chain: 'AnimationDataOutput' | None = None) -> None:
+        self._next_in_chain = next_in_chain
+    
+    @abstractmethod
+    async def capture_frame(self, data: "AnimationData") -> None:
+        """애니메이션 프레임 데이터를 캡처합니다."""
+        pass
+    
+    @abstractmethod
+    def flush(self) -> None:
+        """현재 데이터 스트림을 플러시합니다."""
+        pass
+    
+    def on_attached(self) -> None:
+        """출력이 연결될 때 호출됩니다."""
+        if self._next_in_chain:
+            self._next_in_chain.on_attached()
+    
+    def on_detached(self) -> None:
+        """출력이 분리될 때 호출됩니다."""
+        if self._next_in_chain:
+            self._next_in_chain.on_detached()
+
+
 class AgentInput:
     def __init__(
         self, video_changed: Callable[[], None], audio_changed: Callable[[], None]
@@ -311,17 +346,21 @@ class AgentOutput:
         video_changed: Callable[[], None],
         audio_changed: Callable[[], None],
         transcription_changed: Callable[[], None],
+        animation_changed: Callable[[], None] = lambda: None,
     ) -> None:
         self._video_sink: VideoOutput | None = None
         self._audio_sink: AudioOutput | None = None
         self._transcription_sink: TextOutput | None = None
+        self._animation_sink: AnimationDataOutput | None = None
         self._video_changed = video_changed
         self._audio_changed = audio_changed
         self._transcription_changed = transcription_changed
+        self._animation_changed = animation_changed
 
         self._audio_enabled = True
         self._video_enabled = True
         self._transcription_enabled = True
+        self._animation_enabled = True
 
     def set_video_enabled(self, enabled: bool) -> None:
         if enabled == self._video_enabled:
@@ -365,6 +404,21 @@ class AgentOutput:
         else:
             self._transcription_sink.on_detached()
 
+    def set_animation_enabled(self, enabled: bool):
+        """애니메이션 데이터 출력 활성화/비활성화"""
+        if enabled == self._animation_enabled:
+            return
+
+        self._animation_enabled = enabled
+
+        if not self._animation_sink:
+            return
+
+        if enabled:
+            self._animation_sink.on_attached()
+        else:
+            self._animation_sink.on_detached()
+
     @property
     def audio_enabled(self) -> bool:
         return self._audio_enabled
@@ -376,6 +430,11 @@ class AgentOutput:
     @property
     def transcription_enabled(self) -> bool:
         return self._transcription_enabled
+
+    @property
+    def animation_enabled(self) -> bool:
+        """애니메이션 데이터 출력 활성화 상태"""
+        return self._animation_enabled
 
     @property
     def video(self) -> VideoOutput | None:
@@ -421,3 +480,23 @@ class AgentOutput:
 
         if self._transcription_sink:
             self._transcription_sink.on_attached()
+
+    @property
+    def animation(self) -> AnimationDataOutput | None:
+        """애니메이션 데이터 출력 싱크"""
+        return self._animation_sink
+
+    @animation.setter
+    def animation(self, sink: AnimationDataOutput | None) -> None:
+        """애니메이션 데이터 출력 싱크 설정"""
+        if sink is self._animation_sink:
+            return
+
+        if self._animation_sink:
+            self._animation_sink.on_detached()
+
+        self._animation_sink = sink
+        self._animation_changed()
+
+        if self._animation_sink:
+            self._animation_sink.on_attached()
