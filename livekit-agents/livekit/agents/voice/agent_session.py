@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import copy
 import time
-<<<<<<< HEAD
 from collections.abc import AsyncIterable
 from dataclasses import dataclass
 from types import TracebackType
@@ -16,11 +15,6 @@ from typing import (
     Union,
     runtime_checkable,
 )
-=======
-from collections.abc import AsyncIterable, Callable, Coroutine
-from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Generic, Literal, Protocol, TypeVar, Union, runtime_checkable, Any
->>>>>>> hans/memorize
 
 from livekit import rtc
 

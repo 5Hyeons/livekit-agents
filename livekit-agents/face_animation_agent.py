@@ -2,7 +2,7 @@ import asyncio
 import logging
 import os
 from datetime import datetime
-from typing import List, Dict, Any
+from typing import Dict, Any
 
 # Set higher logging level for Numba before other configurations
 logging.getLogger('numba').setLevel(logging.WARNING)
@@ -100,9 +100,6 @@ async def entrypoint(ctx: JobContext):
     # 데이터베이스에서 사용자 정보 가져오기 또는 생성
     db: UserDatabase = ctx.proc.userdata["db"]
     user_data = db.get_or_create_user(participant.identity)
-    
-    # 채팅 기록을 저장할 리스트
-    chat_messages: List[ChatMessage] = []
 
     # AgentSession 생성 (STF 클라이언트 포함)
     session = AgentSession(
@@ -151,9 +148,12 @@ async def entrypoint(ctx: JobContext):
     #         room=ctx.room,
     #         destination_identity=participant.identity,
     #     )
+    # Agent 인스턴스 생성
+    agent = FaceAgent(user_data, db)
+    
     # 세션 시작
     await session.start(
-        agent=FaceAgent(user_data, db),
+        agent=agent,
         room=ctx.room,
         room_input_options=room_input_options,
         room_output_options=room_output_options
@@ -163,6 +163,19 @@ async def entrypoint(ctx: JobContext):
     @session.on("close")
     def on_session_close():
         """세션 종료 시 채팅 기록을 데이터베이스에 저장"""
+        # agent.chat_ctx에서 현재 세션의 메시지들 가져오기
+        chat_messages = []
+        for item in agent.chat_ctx.items:
+            if isinstance(item, llm.ChatMessage):
+                chat_messages.append(ChatMessage(
+                    participant_id=participant.identity,
+                    session_id=user_data.session_id,
+                    timestamp=item.created_at or datetime.now(),
+                    role=item.role,
+                    content=item.content,
+                    interrupted=getattr(item, 'interrupted', False)
+                ))
+        
         logger.info(f"세션 종료, 채팅 기록 저장 중... (총 {len(chat_messages)}개 메시지)")
         
         # 데이터베이스에 채팅 기록 저장
@@ -173,34 +186,6 @@ async def entrypoint(ctx: JobContext):
         # 사용자 요약 정보 로깅
         summary = db.get_user_summary(participant.identity)
         logger.info(f"사용자 정보: {summary}")
-    
-    # 사용자 음성 입력 이벤트 핸들러
-    @session.on("user_speech_complete")
-    def on_user_speech(ev):
-        """사용자 음성 입력 완료 시 채팅 기록에 추가"""
-        if ev.transcript:
-            chat_messages.append(ChatMessage(
-                participant_id=participant.identity,
-                session_id=user_data.session_id,
-                timestamp=datetime.now(),
-                role="user",
-                content=ev.transcript,
-                interrupted=ev.interrupted
-            ))
-    
-    # 어시스턴트 응답 이벤트 핸들러 
-    @session.on("agent_speech_complete")
-    def on_agent_speech(ev):
-        """어시스턴트 응답 완료 시 채팅 기록에 추가"""
-        if ev.transcript:
-            chat_messages.append(ChatMessage(
-                participant_id=participant.identity,
-                session_id=user_data.session_id,
-                timestamp=datetime.now(),
-                role="assistant",
-                content=ev.transcript,
-                interrupted=ev.interrupted
-            ))
     
     # RPC 메서드 등록 - 사용자 주의 확인 메시지
     @ctx.room.local_participant.register_rpc_method("check_attention")
