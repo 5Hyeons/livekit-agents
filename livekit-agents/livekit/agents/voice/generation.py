@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import time
 import asyncio
 import inspect
@@ -470,7 +472,8 @@ async def _execute_tools_task(
                     type(session.current_agent), {}
                 )
 
-                if mock := mock_tools.get(fnc_call.name):
+                mock_func = mock_tools.get(fnc_call.name)
+                if mock_func is not None:
                     logger.debug(
                         "executing mock tool",
                         extra={
@@ -481,14 +484,15 @@ async def _execute_tools_task(
                     )
 
                     async def _run_mock() -> Any:
-                        sig = inspect.signature(mock)
+                        assert mock_func is not None  # Type assertion for mypy
+                        sig = inspect.signature(mock_func)
                         bound = sig.bind_partial(*fnc_args, **fnc_kwargs)
                         bound.apply_defaults()
 
-                        if asyncio.iscoroutinefunction(mock):
-                            return await mock(*fnc_args, **fnc_kwargs)
+                        if asyncio.iscoroutinefunction(mock_func):
+                            return await mock_func(*fnc_args, **fnc_kwargs)
                         else:
-                            return mock(*fnc_args, **fnc_kwargs)
+                            return mock_func(*fnc_args, **fnc_kwargs)
 
                     task = asyncio.create_task(
                         _run_mock(),
@@ -559,11 +563,7 @@ async def _execute_tools_task(
                        "MCP tool" in exc.message and \
                        "network-related issue" in exc.message:
                         
-                        logger.warning(f"MCP Connection-like error detected for tool '{fnc_call.name}'. Attempting to handle via AgentSession.")
-                        
-                        asyncio.create_task(
-                            session._handle_mcp_server_error(error=exc, tool_name=fnc_call.name)
-                        )
+                        logger.warning(f"MCP Connection-like error detected for tool '{fnc_call.name}'. This error will be returned to the user.")
                 else:
                     # 예외가 없는 경우 (성공)
                     try:

@@ -20,7 +20,7 @@ documentation, and examples.
 
 import typing
 
-from . import cli, ipc, llm, metrics, stt, tokenize, tts, utils, vad, voice  # noqa: F401
+from . import cli, ipc, llm, metrics, stt, tokenize, tts, utils, vad, voice, stf  # noqa: F401
 from ._exceptions import (
     APIConnectionError,
     APIError,
@@ -161,6 +161,7 @@ __all__ = [
     "stt",
     "tokenize",
     "tts",
+    "stf",
     "utils",
     "vad",
     "voice",

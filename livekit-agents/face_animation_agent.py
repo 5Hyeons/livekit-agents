@@ -60,7 +60,20 @@ class FaceAgent(Agent):
             
         super().__init__(
             instructions=base_instructions,
-            stf=FaceAnimatorSTFTriton(chunk_duration_sec=1.0),  
+            stt=deepgram.STT(model="nova-2-general", language="ko"),
+            llm=openai.LLM(model="gpt-4o"),
+            tts=elevenlabs.TTS(
+                    voice_id="tZarJVdIxWQ9lIXIV9qg",
+                    model="eleven_turbo_v2_5",
+                    voice_settings=elevenlabs.VoiceSettings(
+                        stability=0.5,
+                        similarity_boost=0.75,
+                        style=0.0,
+                        speed=1.0,
+                    ),
+                    encoding="mp3_44100_32",
+                ),
+            stf=FaceAnimatorSTFTriton(chunk_duration_sec=1.0),
         )
 
     async def on_enter(self): 
@@ -75,12 +88,26 @@ class FaceAgent(Agent):
             self.session.generate_reply(instructions="사용자에게 간단히 인사를 하고 이름을 물어보는 것으로 시작하세요.")
     
     @function_tool
-    async def save_user_name(self, context: RunContext, name: str):
-        """사용자의 이름을 저장합니다. 사용자가 자신의 이름을 알려줄 때 이 함수를 호출하세요."""
+    async def save_user_name(self, name: str):
+        """
+        사용자의 이름을 저장합니다. 사용자가 자신의 이름을 알려줄 때 이 함수를 호출하세요.
+        이 함수는 한 번만 호출해야 합니다.
+        
+        Args:
+            name: 사용자의 이름
+        """
+        
+        # 이미 이름이 저장되어 있다면 중복 호출 방지
+        if self.user_data.display_name and self.user_data.display_name == name:
+            logger.info(f"이름이 이미 저장됨: {name}")
+            return
+        
         self.db.update_user_name(self.user_data.participant_id, name)
         self.user_data.display_name = name
         logger.info(f"사용자 이름 저장: {self.user_data.participant_id} -> {name}")
-        return f"{name}님의 이름을 기억했습니다."
+        result = f"네, {name}님! 이름을 기억했습니다."
+        logger.info(f"🔧 [TOOL DEBUG] save_user_name 결과 반환: {result}")
+        return result
 
 def prewarm(proc: JobProcess):
     # VAD 모델 로드
@@ -105,21 +132,21 @@ async def entrypoint(ctx: JobContext):
     session = AgentSession(
         vad=ctx.proc.userdata["vad"],
         # stt=openai.STT(model="gpt-4o-mini-transcribe"),  # OpenAI Whisper STT 모델 사용
-        stt=deepgram.STT(model="nova-2-general", language="ko"),
-        llm=openai.LLM(model="gpt-4.1-nano"),
+        # stt=deepgram.STT(model="nova-2-general", language="ko"),
+        # llm=openai.LLM(model="gpt-4o"),
         # llm=openai.realtime.RealtimeModel(model="gpt-4o-realtime-preview-2025-06-03"),
         # tts=openai.TTS(model="gpt-4o-mini-tts", voice="alloy"),  # 음성 기본 설정 
-        tts=elevenlabs.TTS(
-                voice_id="tZarJVdIxWQ9lIXIV9qg",
-                model="eleven_turbo_v2_5",
-                voice_settings=elevenlabs.VoiceSettings(
-                    stability=0.5,
-                    similarity_boost=0.75,
-                    style=0.0,
-                    speed=1.0,
-                ),
-                encoding="mp3_44100_32",
-            ),
+        # tts=elevenlabs.TTS(
+        #         voice_id="tZarJVdIxWQ9lIXIV9qg",
+        #         model="eleven_turbo_v2_5",
+        #         voice_settings=elevenlabs.VoiceSettings(
+        #             stability=0.5,
+        #             similarity_boost=0.75,
+        #             style=0.0,
+        #             speed=1.0,
+        #         ),
+        #         encoding="mp3_44100_32",
+        #     ),
     )
 
     room_input_options = RoomInputOptions(
@@ -144,10 +171,6 @@ async def entrypoint(ctx: JobContext):
     agent_identity = ctx.room.local_participant.identity
     logger.info(f"Agent Identity: {agent_identity}")
 
-    # session.output.audio = DataStreamAudioOutput(
-    #         room=ctx.room,
-    #         destination_identity=participant.identity,
-    #     )
     # Agent 인스턴스 생성
     agent = FaceAgent(user_data, db)
     
@@ -167,12 +190,27 @@ async def entrypoint(ctx: JobContext):
         chat_messages = []
         for item in agent.chat_ctx.items:
             if isinstance(item, llm.ChatMessage):
+                # timestamp 변환 (float인 경우 datetime으로 변환)
+                if isinstance(item.created_at, (int, float)):
+                    timestamp = datetime.fromtimestamp(item.created_at)
+                elif isinstance(item.created_at, datetime):
+                    timestamp = item.created_at
+                else:
+                    timestamp = datetime.now()
+                
+                # content 변환 (리스트인 경우 텍스트만 추출)
+                content_str = ""
+                if isinstance(item.content, list):
+                    content_str = " ".join(str(c) for c in item.content)
+                else:
+                    content_str = str(item.content)
+                
                 chat_messages.append(ChatMessage(
                     participant_id=participant.identity,
                     session_id=user_data.session_id,
-                    timestamp=item.created_at or datetime.now(),
+                    timestamp=timestamp,
                     role=item.role,
-                    content=item.content,
+                    content=content_str,
                     interrupted=getattr(item, 'interrupted', False)
                 ))
         

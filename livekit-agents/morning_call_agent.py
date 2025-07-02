@@ -113,7 +113,7 @@ async def entrypoint(ctx: JobContext):
     )
     # RoomIO 옵션 설정 (애니메이션 데이터 출력 활성화)
     room_output_options = RoomOutputOptions(
-        video_enabled=False,          # 비디오 출력 비활성화
+        # video_enabled=False,          # 비디오 출력 비활성화
         audio_enabled=True,          
         transcription_enabled=True,   # 텍스트 전사 출력
         sync_transcription=True,

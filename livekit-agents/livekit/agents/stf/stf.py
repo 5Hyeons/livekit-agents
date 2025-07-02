@@ -357,7 +357,7 @@ class STFTritonStream:
             
             # Get output - shape is (1, num_frames, 52)
             output = response.as_numpy("anim_output")
-            logger.debug(f"Triton server response shape: {output.shape}")
+            # logger.debug(f"Triton server response shape: {output.shape}")
             
             return output
             
@@ -407,7 +407,7 @@ class STFTritonStream:
                     # Keep remaining audio
                     audio_buffer = audio_buffer[min_samples:]
 
-                    logger.debug(f"STF Triton 처리 청크 준비 (길이: {len(audio_to_process)/16000.0:.2f}초)")
+                    # logger.debug(f"STF Triton 처리 청크 준비 (길이: {len(audio_to_process)/16000.0:.2f}초)")
                     
                     # Send request to Triton server
                     animation_output = await self._send_triton_inference_request(audio_to_process)
@@ -417,7 +417,7 @@ class STFTritonStream:
                         # Remove the first dimension and iterate over frames
                         flattened_output = animation_output[0]  # Shape becomes (num_frames, 52)
                         num_frames = flattened_output.shape[0]
-                        logger.debug(f"Triton 서버로부터 {num_frames}개 블렌드쉐입 프레임 수신")
+                        # logger.debug(f"Triton 서버로부터 {num_frames}개 블렌드쉐입 프레임 수신")
                         
                         # Put each frame (numpy array) into the queue
                         for blendshape_frame in flattened_output:
@@ -427,13 +427,13 @@ class STFTritonStream:
             # Process any remaining audio in the buffer after input ends
             if len(audio_buffer) > 0:
                 buffer_duration = len(audio_buffer) / 16000.0
-                logger.debug(f"남은 오디오 처리: {buffer_duration:.2f}초 ({len(audio_buffer)} 샘플)")
+                # logger.debug(f"남은 오디오 처리: {buffer_duration:.2f}초 ({len(audio_buffer)} 샘플)")
 
                 animation_output = await self._send_triton_inference_request(audio_buffer)
                 if animation_output is not None and animation_output.size > 0:
                     flattened_output = animation_output[0]
                     num_frames = flattened_output.shape[0]
-                    logger.debug(f"최종 STF Triton 추론: 서버로부터 {num_frames}개 프레임 수신")
+                    # logger.debug(f"최종 STF Triton 추론: 서버로부터 {num_frames}개 프레임 
                     for blendshape_frame in flattened_output:
                         await self._blendshape_frames.put(blendshape_frame)
                         animations_generated += 1
@@ -455,13 +455,13 @@ class STFTritonStream:
     async def __anext__(self) -> AnimationData:
         """Return animation data."""
         if self._task is None:
-            logger.debug("STF Triton 프레임 처리 태스크 시작")
+            # logger.debug("STF Triton 프레임 처리 태스크 시작")
             self._task = asyncio.create_task(self._process_frames())
             self._last_frame_time = asyncio.get_event_loop().time()
 
         blendshape_frame = await self._blendshape_frames.get()
         if blendshape_frame is None:
-            logger.debug("STF Triton 스트림 종료")
+            # logger.debug("STF Triton 스트림 종료")
             # Ensure task is finished before raising StopAsyncIteration
             if self._task and not self._task.done():
                 try:
@@ -484,7 +484,7 @@ class STFTritonStream:
     async def aclose(self) -> None:
         """Close the stream."""
         if not self._is_closed:
-            logger.debug("STF Triton 스트림 aclose 호출")
+            # logger.debug("STF Triton 스트림 aclose 호출")
             self.flush()
             self._is_closed = True
             await aio.cancel_and_wait(self._task)
@@ -555,7 +555,7 @@ class STFTritonStreamPair:
             
             # Get output - shape is (1, num_frames, 52)
             output = response.as_numpy("anim_output")
-            logger.debug(f"Triton server response shape: {output.shape}")
+            # logger.debug(f"Triton server response shape: {output.shape}")
             
             return output
             
@@ -602,7 +602,7 @@ class STFTritonStreamPair:
                     # Keep remaining audio
                     audio_buffer = audio_buffer[min_samples:]
 
-                    logger.debug(f"STF Triton Pair 처리 청크 준비 (길이: {len(audio_to_process)/self._original_sample_rate:.2f}초)")
+                    # logger.debug(f"STF Triton Pair 처리 청크 준비 (길이: {len(audio_to_process)/self._original_sample_rate:.2f}초)")
                     
                     # Send request to Triton server (내부에서 타입 변환 및 리샘플링됨)
                     animation_output = await self._send_triton_inference_request(audio_to_process)
@@ -611,7 +611,7 @@ class STFTritonStreamPair:
                         # Output shape is (1, num_frames, 52) - need to flatten first dimension
                         flattened_output = animation_output[0]  # Shape becomes (num_frames, 52)
                         num_frames = flattened_output.shape[0]
-                        logger.debug(f"Triton 서버로부터 {num_frames}개 블렌드쉐입 프레임 수신")
+                        #   logger.debug(f"Triton 서버로부터 {num_frames}개 블렌드쉐입 프레임 수신")
                         
                         # 오디오 샘플을 애니메이션 프레임에 균등하게 분배 (누락 방지)
                         total_samples = len(audio_to_process)
@@ -635,13 +635,13 @@ class STFTritonStreamPair:
             # Process any remaining audio in the buffer after input ends
             if len(audio_buffer) > 0:
                 buffer_duration = len(audio_buffer) / self._original_sample_rate
-                logger.debug(f"남은 오디오 처리: {buffer_duration:.2f}초 ({len(audio_buffer)} 샘플)")
+                # logger.debug(f"남은 오디오 처리: {buffer_duration:.2f}초 ({len(audio_buffer)} 샘플)")
 
                 animation_output = await self._send_triton_inference_request(audio_buffer)
                 if animation_output is not None and animation_output.size > 0:
                     flattened_output = animation_output[0]
                     num_frames = flattened_output.shape[0]
-                    logger.debug(f"최종 STF Triton 추론: 서버로부터 {num_frames}개 프레임 수신")
+                    # logger.debug(f"최종 STF Triton 추론: 서버로부터 {num_frames}개 프레임 수신")
                     
                     total_samples = len(audio_buffer)
                     
@@ -677,13 +677,13 @@ class STFTritonStreamPair:
     async def __anext__(self) -> AnimationData:
         """Return animation data with paired audio."""
         if self._task is None:
-            logger.debug("STF Triton Pair 프레임 처리 태스크 시작")
+            # logger.debug("STF Triton Pair 프레임 처리 태스크 시작")
             self._task = asyncio.create_task(self._process_frames())
             self._last_frame_time = asyncio.get_event_loop().time()
 
         output = await self._output_queue.get()
         if output is None:
-            logger.debug("STF Triton Pair 스트림 종료")
+            # logger.debug("STF Triton Pair 스트림 종료")
             # Ensure task is finished before raising StopAsyncIteration
             if self._task and not self._task.done():
                 try:
@@ -713,7 +713,7 @@ class STFTritonStreamPair:
     async def aclose(self) -> None:
         """Close the stream."""
         if not self._is_closed:
-            logger.debug("STF Triton Pair 스트림 aclose 호출")
+            # logger.debug("STF Triton Pair 스트림 aclose 호출")
             self.flush()
             self._is_closed = True
             await aio.cancel_and_wait(self._task)
@@ -768,7 +768,7 @@ class FaceAnimatorSTF(STF):
 
     async def aclose(self) -> None:
         """Close the FaceAnimatorSTF client and associated streams."""
-        logger.debug("Closing FaceAnimatorSTF client and streams.")
+        # logger.debug("Closing FaceAnimatorSTF client and streams.")
         # Close all active streams associated with this instance
         # Iterate over a copy
         for stream in list(self._streams):
@@ -831,7 +831,7 @@ class FaceAnimatorSTFTriton(STF):
     def __init__(
         self,
         *,
-        triton_url: str = "61.14.209.9:8400",
+        triton_url: str = "localhost:8300",
         model_name: str = "ensemble_model",
         frame_rate: int = 60,
         sample_rate: int = 16000,
@@ -855,7 +855,7 @@ class FaceAnimatorSTFTriton(STF):
 
     async def aclose(self) -> None:
         """Close the FaceAnimatorSTFTriton client and associated streams."""
-        logger.debug("Closing FaceAnimatorSTFTriton client and streams.")
+        # logger.debug("Closing FaceAnimatorSTFTriton client and streams.")
         # Close all active streams associated with this instance
         for stream in list(self._streams):
             await stream.aclose()

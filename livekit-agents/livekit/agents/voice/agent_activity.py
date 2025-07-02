@@ -803,23 +803,12 @@ class AgentActivity(RecognitionHooks):
     @utils.log_exceptions(logger=logger)
     async def _scheduling_task(self) -> None:
         last_playout_ts = 0.0
-        logger.info("_main_task: 시작됨")
         while True:
-            logger.debug("_main_task: _q_updated 이벤트 대기 중...")
             await self._q_updated.wait()
-            logger.info("_main_task: 깨어남 (큐 크기: %d, draining: %s)", len(self._speech_q), self._draining)
             
             while self._speech_q:
                 _, _, speech = heapq.heappop(self._speech_q)
-                logger.info(
-                    "Speech 처리 시작 - ID: %s, Step: %d, Interrupt 허용: %s",
-                    speech.id,
-                    speech.step_index,
-                    speech.allow_interruptions
-                )
-                
                 self._current_speech = speech
-                
                 if self.min_consecutive_speech_delay > 0.0:
                     await asyncio.sleep(
                         self.min_consecutive_speech_delay - (time.time() - last_playout_ts)
@@ -1512,6 +1501,7 @@ class AgentActivity(RecognitionHooks):
                         forwarded_text = playback_ev.synchronized_transcript
                 else:
                     forwarded_text = ""
+                    
             if animation_output is not None:
                 animation_output.clear_buffer()
                 logger.debug(f"[agent_activity] Interruption으로 인한 애니메이션 데이터 전송 중단")
@@ -1578,28 +1568,29 @@ class AgentActivity(RecognitionHooks):
             new_calls: list[llm.FunctionCall] = []
             new_fnc_outputs: list[llm.FunctionCallOutput] = []
             generate_tool_reply: bool = False
+            new_agent_task: Agent | None = None
+            ignore_task_switch = False
             fnc_executed_ev = FunctionToolsExecutedEvent(
                 function_calls=[],
                 function_call_outputs=[],
             )
-            new_agent_task: Agent | None = None
-            ignore_task_switch = False
-
             for py_out in tool_output.output:
                 sanitized_out = py_out.sanitize()
+
+                if sanitized_out.fnc_call_out is not None:
+                    new_calls.append(sanitized_out.fnc_call)
+                    new_fnc_outputs.append(sanitized_out.fnc_call_out)
+                    if sanitized_out.reply_required:
+                        generate_tool_reply = True
 
                 # add the function call and output to the event, including the None outputs
                 fnc_executed_ev.function_calls.append(sanitized_out.fnc_call)
                 fnc_executed_ev.function_call_outputs.append(sanitized_out.fnc_call_out)
 
-                if sanitized_out.fnc_call_out is not None:
-                    new_fnc_outputs.append(sanitized_out.fnc_call_out)
-                    if sanitized_out.reply_required:
-                        generate_tool_reply = True
-
                 if new_agent_task is not None and sanitized_out.agent_task is not None:
                     logger.error("expected to receive only one AgentTask from the tool executions")
                     ignore_task_switch = True
+                    # TODO(long): should we mark the function call as failed to notify the LLM?
 
                 new_agent_task = sanitized_out.agent_task
             self._session.emit("function_tools_executed", fnc_executed_ev)
@@ -1627,13 +1618,20 @@ class AgentActivity(RecognitionHooks):
                             if draining or model_settings.tool_choice == "none"
                             else "auto",
                         ),
+                        _tools_messages=tool_messages,
                     ),
                     speech_handle=speech_handle,
                     name="AgentActivity.pipeline_reply",
                 )
+                tool_response_task.add_done_callback(self._on_pipeline_reply_done)
                 self._schedule_speech(
                     speech_handle, SpeechHandle.SPEECH_PRIORITY_NORMAL, force=True
                 )
+            elif len(new_fnc_outputs) > 0:
+                # add the tool calls and outputs to the chat context even no reply is generated
+                for msg in tool_messages:
+                    msg.created_at = reply_started_at
+                self._agent._chat_ctx.insert(tool_messages)
 
     @utils.log_exceptions(logger=logger)
     async def _realtime_reply_task(
