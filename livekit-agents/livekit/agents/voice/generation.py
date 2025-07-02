@@ -484,8 +484,7 @@ async def _execute_tools_task(
                     )
 
                     async def _run_mock() -> Any:
-                        assert mock_func is not None  # Type assertion for mypy
-                        sig = inspect.signature(mock_func)
+                        sig = inspect.signature(mock)
                         bound = sig.bind_partial(*fnc_args, **fnc_kwargs)
                         bound.apply_defaults()
 

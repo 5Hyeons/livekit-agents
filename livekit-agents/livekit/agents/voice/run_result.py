@@ -543,12 +543,13 @@ class AgentHandoffAssert:
 
 
 # to make testing easier, we allow sync Callable too
-MockTools = dict[type["Agent"], dict[str, Callable]]
-_MockToolsContextVar = contextvars.ContextVar[MockTools]("agents_mock_tools")
+if TYPE_CHECKING:
+    MockTools = dict[type[Agent], dict[str, Callable]]
+_MockToolsContextVar = contextvars.ContextVar["MockTools"]("agents_mock_tools")
 
 
 @contextmanager
-def mock_tools(agent: type["Agent"], mocks: dict[str, Callable]) -> Generator[None, None, None]:
+def mock_tools(agent: type[Agent], mocks: dict[str, Callable]) -> Generator[None, None, None]:
     """
     Temporarily assign a set of mock tool callables to a specific Agent type within the current context.
 
