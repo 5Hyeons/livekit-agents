@@ -879,7 +879,7 @@ async def _animation_forwarding_task(
             out.animation.append(anim_data)
             await animation_output.capture_frame(anim_data)
             # 1/60초 만큼 sleep
-            await asyncio.sleep(1/80)
+            await asyncio.sleep(1/200)
             frames_count += 1
             
             if frames_count == 1:
