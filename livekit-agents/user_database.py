@@ -6,9 +6,28 @@ from typing import Optional, List, Dict, Any
 from dataclasses import dataclass, field
 import uuid
 import os
+import re
 from contextlib import contextmanager
 
 logger = logging.getLogger("user-database")
+
+def sanitize_filename(filename: str) -> str:
+    """
+    파일명에서 특수문자를 제거하고 안전한 파일명으로 변환
+    경로 traversal 공격 방지를 위해 '../' 등의 패턴 제거
+    """
+    # 경로 traversal 패턴 제거
+    filename = filename.replace('..', '').replace('/', '').replace('\\', '')
+    # 특수문자를 언더스코어로 대체 (영문자, 숫자, 하이픈, 언더스코어만 허용)
+    filename = re.sub(r'[^a-zA-Z0-9_-]', '_', filename)
+    # 연속된 언더스코어를 하나로 줄임
+    filename = re.sub(r'_+', '_', filename)
+    # 앞뒤 언더스코어 제거
+    filename = filename.strip('_')
+    # 빈 문자열이면 기본값 사용
+    if not filename:
+        filename = 'unknown_user'
+    return filename
 
 @dataclass
 class UserData:
@@ -32,11 +51,17 @@ class ChatMessage:
 class UserDatabase:
     """사용자 정보와 채팅 기록을 관리하는 데이터베이스"""
     
-    def __init__(self, db_path: str = "data/users.db"):
-        self.db_path = db_path
+    def __init__(self, participant_id: str, db_dir: str = "data"):
+        # 사용자 ID를 안전한 파일명으로 변환
+        safe_id = sanitize_filename(participant_id)
+        self.participant_id = participant_id
+        self.db_path = os.path.join(db_dir, f"users_{safe_id}.db")
+        
         # 데이터 디렉토리 생성
-        os.makedirs(os.path.dirname(db_path), exist_ok=True)
+        os.makedirs(db_dir, exist_ok=True)
         self._init_database()
+        
+        logger.info(f"사용자 {participant_id}용 DB 초기화: {self.db_path}")
         
     @contextmanager
     def get_connection(self):
