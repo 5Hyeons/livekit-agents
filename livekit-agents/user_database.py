@@ -37,6 +37,7 @@ class UserData:
     first_seen: Optional[datetime] = None
     last_seen: Optional[datetime] = None
     session_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    language: str = "ko"  # 사용자 언어 (기본값: 한국어)
     
 @dataclass
 class ChatMessage:
@@ -87,6 +88,7 @@ class UserDatabase:
                     display_name TEXT,
                     first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    language TEXT DEFAULT 'ko',
                     metadata TEXT
                 )
             """)
@@ -124,20 +126,22 @@ class UserDatabase:
                     participant_id=result['participant_id'],
                     display_name=result['display_name'],
                     first_seen=datetime.fromisoformat(result['first_seen']),
-                    last_seen=datetime.fromisoformat(result['last_seen'])
+                    last_seen=datetime.fromisoformat(result['last_seen']),
+                    language=result['language'] or 'ko'
                 )
-                logger.info(f"기존 사용자 로드: {participant_id}, 이름: {user_data.display_name}")
+                logger.info(f"기존 사용자 로드: {participant_id}, 이름: {user_data.display_name}, 언어: {user_data.language}")
             else:
                 # 새 사용자 생성
                 now = datetime.now()
                 conn.execute(
-                    "INSERT INTO users (participant_id, first_seen, last_seen) VALUES (?, ?, ?)",
-                    (participant_id, now, now)
+                    "INSERT INTO users (participant_id, first_seen, last_seen, language) VALUES (?, ?, ?, ?)",
+                    (participant_id, now, now, 'ko')
                 )
                 user_data = UserData(
                     participant_id=participant_id,
                     first_seen=now,
-                    last_seen=now
+                    last_seen=now,
+                    language='ko'
                 )
                 logger.info(f"새 사용자 생성: {participant_id}")
                 
@@ -152,6 +156,37 @@ class UserDatabase:
             )
             logger.info(f"사용자 이름 업데이트: {participant_id} -> {display_name}")
             
+    def update_user_language(self, participant_id: str, language: str):
+        """사용자 언어 업데이트"""
+        with self.get_connection() as conn:
+            conn.execute(
+                "UPDATE users SET language = ?, last_seen = ? WHERE participant_id = ?",
+                (language, datetime.now(), participant_id)
+            )
+            logger.info(f"사용자 언어 업데이트: {participant_id} -> {language}")
+            
+    def update_user_metadata(self, participant_id: str, metadata: Dict[str, Any]):
+        """사용자 메타데이터 업데이트"""
+        with self.get_connection() as conn:
+            metadata_json = json.dumps(metadata) if metadata else None
+            conn.execute(
+                "UPDATE users SET metadata = ?, last_seen = ? WHERE participant_id = ?",
+                (metadata_json, datetime.now(), participant_id)
+            )
+            logger.info(f"사용자 메타데이터 업데이트: {participant_id}")
+            
+    def get_user_metadata(self, participant_id: str) -> Optional[Dict[str, Any]]:
+        """사용자 메타데이터 조회"""
+        with self.get_connection() as conn:
+            result = conn.execute(
+                "SELECT metadata FROM users WHERE participant_id = ?",
+                (participant_id,)
+            ).fetchone()
+            
+            if result and result['metadata']:
+                return json.loads(result['metadata'])
+            return None
+            
     def update_last_seen(self, participant_id: str):
         """마지막 접속 시간 업데이트"""
         with self.get_connection() as conn:
@@ -159,6 +194,7 @@ class UserDatabase:
                 "UPDATE users SET last_seen = ? WHERE participant_id = ?",
                 (datetime.now(), participant_id)
             )
+            
             
     def save_chat_message(self, message: ChatMessage):
         """채팅 메시지 저장"""

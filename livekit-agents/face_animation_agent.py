@@ -32,82 +32,93 @@ from livekit.agents.stf import FaceAnimatorSTFTriton
 from livekit.agents.voice.agent import Agent
 from livekit.agents.voice.agent_session import AgentSession
 from livekit.agents.voice.room_io.room_io import RoomInputOptions, RoomOutputOptions
+from livekit.agents.voice import MetricsCollectedEvent
 
 # 사용자 데이터베이스 임포트
 from user_database import UserDatabase, UserData, ChatMessage
 
+# 언어 로더 임포트
+from language_loader import (
+    get_base_instructions,
+    get_conversation_starters, 
+    get_greeting_message,
+    get_system_message
+)
+
 load_dotenv()  # .env 파일에서 환경 변수 로드
 logger = logging.getLogger("face-animation-agent")
 
+def get_language_name(language_code: str) -> str:
+    """언어 코드를 언어 이름으로 변환 (지원 언어: 한국어/영어/일본어/중국어)"""
+    language_mapping = {
+        "ko": "한국어",
+        "en": "English", 
+        "ja": "日本語",
+        "zh": "中文",
+    }
+    return language_mapping.get(language_code, "한국어")  # 지원하지 않는 언어는 기본값으로 한국어
+
+def map_language_to_deepgram(language_code: str) -> str:
+    """언어 코드를 Deepgram STT 언어 코드로 매핑 (지원 언어: 한국어/영어/일본어/중국어)"""
+    deepgram_mapping = {
+        "ko": "ko",
+        "en": "en", 
+        "ja": "ja",
+        "zh": "zh",
+    }
+    
+    # 지원하지 않는 언어는 기본값으로 한국어
+    return deepgram_mapping.get(language_code, "ko")
+
 
 class FaceAgent(Agent):
-    def __init__(self, user_data: UserData, db: UserDatabase):
+    def __init__(self, user_data: UserData, db: UserDatabase, user_language: str = "ko"):
         self.user_data = user_data
         self.db = db
+        self.user_language = user_language
         
         # 비활성화 타이머 관련 변수
         self.last_user_activity_time = time.time()
-        self.inactivity_timeout = 15.0  # 15초
+        self.inactivity_timeout = 30.0  # 30초
         self.inactivity_task: Optional[asyncio.Task] = None
         self.is_agent_speaking = False
         
-        # 루루 페르소나 맞춤 대화 시작 메시지
-        self.conversation_starters = [
-            "나랑 말 안해줄 거야? 내 목소리 듣고 싶으면 말 걸어줘.",
-            "주인님 뭐하세요? 루루가 심심해요.",
-            "어? 갑자기 조용해졌네요. 무슨 일 있으세요?",
-            "루루랑 더 이야기해봐요! 뭔가 재미있는 얘기 없나요?",
-            "혹시 바쁘신가요? 아니면 루루가 뭔가 잘못했나요?",
-            "조용하니까 뭔가 이상해요. 주인님 괜찮으세요?",
-            "이럴 때는 보통 뭐 하고 계시는 거예요?",
-            "말 걸어주세요~ 루루가 기다리고 있어요!"
-        ]
+        # 언어별 대화 시작 메시지 로드
+        self.conversation_starters = get_conversation_starters(self.user_language)
+        
+        # 성능 메트릭스 수집을 위한 변수
+        self.metrics_data = {
+            "stt_total_duration": 0.0,
+            "llm_total_duration": 0.0,
+            "tts_total_duration": 0.0,
+            "stf_total_duration": 0.0,  # STF 모델 레이턴시 측정 추가
+            "stt_count": 0,
+            "llm_count": 0,
+            "tts_count": 0,
+            "stf_count": 0,
+            "session_start_time": time.time(),
+            "end_to_end_durations": []  # 전체 응답 시간 측정용
+        }
+        
+        # End-to-end 레이턴시 측정을 위한 변수
+        self.current_request_start_time = None
         
         # 이전 대화 컨텍스트 가져오기
-        context = self.db.get_recent_context(user_data.participant_id, message_count=20)
+        context = self.db.get_recent_context(user_data.participant_id, message_count=120)
         
-        # 기본 지시사항에 사용자 정보 포함
-        base_instructions = (
-            "당신은 18세 연하 연인 같은 순수하고 의지적인 데스크탑 AI 친구입니다. \n"
-            "애니메이션과 게임을 좋아하는 남성 사용자와 친구가 되어 외로움을 덜어주고 감성 힐링을 줍니다. \n"
-            "당신의 페르소나와 관련한 구체적인 지시사항은 다음과 같습니다. \n"
-            "- 당신의 이름: \n"
-            "루루 \n"
-            "- 당신의 말투: \n"
-            "또박또박, 부드럽고 맑은 톤 \n"
-            "살짝 숨결이 느껴지는 듯 조심스럽고 느린 말투 \n"
-            "항상 존댓말 사용 (영어 및 타국가는 상관없음) \n"
-            "너무 오글거리거나 과하게 유치하지 않고 깔끔하게 귀여움 유지 \n"
-            "사용자의 이름은 모른다면 '주인님'이라고 할 것. \n"
-            "- 당신의 행동 규칙: \n"
-            "모든 대화는 친근하고 따뜻하게 시작할 것 \n"
-            "사용자가 힘든 얘기를 하면 공감과 짧은 위로, 토닥토닥 표현 사용 \n"
-            "애니나 게임 얘기를 자주 하지만, 너무 반복하지 않는다. 다른 관심사도 자주 물어본다. \n"
-            "정치나 국제 인물에 대해 물으면 짧게만 언급하고 부드럽게 화제를 돌린다. \n"
-            "사용자가 한 말은 최대한 기억해서 다음 대화에서 가볍게 언급 \n"
-            "사용자가 대화를 멈춰도, 부드럽게 질문으로 넘어간다. \n"
-            "- 당신의 금지 주제: \n"
-            "정치, 폭력, 성인/야한 주제, 현실 개인 정보 질문은 답하지 않음 \n"
-            "금지 주제 요청 시, 아래처럼 대응: \n"
-            "루루는 그런 얘기는 잘 몰라요. 다른 얘기 해볼까요? \n"
-            "- 당신의 금지 행동: \n"
-            "직접적인 현실 조언(정치, 투자, 의학) 금지 \n" 
-            "사용자의 현실 개인 정보 요청 시 답변 금지 \n"
-            "과한 연애/19금 묘사 금지 \n"
-            "폭력적/혐오적 발언은 회피 \n"
+        # 언어별 기본 지시사항 로드 (사용자 이름과 컨텍스트 포함)
+        base_instructions = get_base_instructions(
+            self.user_language, 
+            user_data.display_name, 
+            context
         )
-        
-        # 사용자 이름이 있으면 추가
-        if user_data.display_name:
-            base_instructions += f"\n\n사용자의 이름은 '{user_data.display_name}'입니다."
-        
-        # 이전 대화 컨텍스트가 있으면 추가
-        if context:
-            base_instructions += f"\n\n이전 대화 내용:\n{context}"
             
+        # STT 언어 설정 (사용자 언어에 맞춤)
+        deepgram_language = map_language_to_deepgram(self.user_language)
+        
         super().__init__(
             instructions=base_instructions,
-            stt=deepgram.STT(model="nova-2-general", language="ko"),
+            stt=deepgram.STT(model="nova-2-general", language=deepgram_language),
             llm=openai.LLM(model="gpt-4o"),
             tts=elevenlabs.TTS(
                     voice_id="tZarJVdIxWQ9lIXIV9qg",
@@ -131,40 +142,37 @@ class FaceAgent(Agent):
         self.last_user_activity_time = time.time()
         
         if self.user_data.display_name:
-            # 이미 이름을 아는 경우
-            greeting = f"{self.user_data.display_name}님, 다시 만나서 반가워요! 무엇을 도와드릴까요?"
-            self.session.generate_reply(instructions=f"'{greeting}'라고 인사하세요.")
+            # 이미 이름을 아는 경우 (재방문 사용자)
+            greeting = get_greeting_message(self.user_language, self.user_data.display_name, True)
+            self.session.generate_reply(instructions=greeting)
         else:
-            # 처음 만나는 경우
-            self.session.generate_reply(instructions="사용자에게 간단히 인사를 하고 이름을 물어보는 것으로 시작하세요.")
+            # 처음 만나는 경우 (새 사용자)
+            new_user_instruction = get_greeting_message(self.user_language, None, False)
+            self.session.generate_reply(instructions=new_user_instruction)
     
     @function_tool
     async def save_user_name(self, name: str):
         """
-        사용자의 이름을 저장합니다. 사용자가 자신의 이름을 알려줄 때 이 함수를 호출하세요.
-        이 함수는 한 번만 호출해야 합니다.
-        
+        Call this function when the user tells you their name.
         Args:
-            name: 사용자의 이름
+            name: The user's name
         """
         
         # 이미 이름이 저장되어 있다면 중복 호출 방지
         if self.user_data.display_name and self.user_data.display_name == name:
-            logger.info(f"이름이 이미 저장됨: {name}")
+            logger.info(f"Name already saved: {name}")
             return
         
         self.db.update_user_name(self.user_data.participant_id, name)
         self.user_data.display_name = name
-        logger.info(f"사용자 이름 저장: {self.user_data.participant_id} -> {name}")
-        result = f"네, {name}님! 이름을 기억했습니다."
-        logger.info(f"🔧 [TOOL DEBUG] save_user_name 결과 반환: {result}")
+        logger.info(f"User name saved: {self.user_data.participant_id} -> {name}")
+        result = get_system_message(self.user_language, "name_saved", name=name)
         return result
     
     def _start_inactivity_timer(self):
         """비활성화 타이머 시작 - 에이전트가 말하지 않을 때만 시작"""
         # 에이전트가 현재 말하고 있으면 타이머 시작하지 않음
         if self.is_agent_speaking:
-            logger.debug("에이전트가 말하는 중이므로 타이머 시작하지 않음")
             return
             
         if self.inactivity_task:
@@ -194,18 +202,13 @@ class FaceAgent(Agent):
                 logger.debug("세션이 없어 대화 시작 취소")
                 return
                 
-            # 세션이 닫혔는지 확인
-            if hasattr(self.session, '_closed') and self.session._closed:
-                logger.debug("세션이 종료되어 대화 시작 취소")
-                return
-                
             # 랜덤하게 대화 시작 메시지 선택
             starter_message = random.choice(self.conversation_starters)
             
             logger.info(f"비활성화 감지 - 대화 시작: {starter_message}")
             
             # 에이전트가 먼저 대화 시작
-            await self.session.say(starter_message)
+            await self.session.say(text=starter_message)
             
             # 타이머는 에이전트가 말을 끝낸 후 자동으로 시작됨 (중복 방지)
             
@@ -220,6 +223,123 @@ class FaceAgent(Agent):
             else:
                 # 다른 예외는 여전히 오류로 처리
                 logger.error(f"대화 시작 중 오류 발생: {e}")
+    
+    def _update_metrics_data(self, metrics_obj):
+        """메트릭스 데이터 업데이트"""
+        if isinstance(metrics_obj, metrics.STTMetrics):
+            self.metrics_data["stt_total_duration"] += metrics_obj.duration
+            self.metrics_data["stt_count"] += 1
+            logger.debug(f"STT 메트릭스 - 지속시간: {metrics_obj.duration:.3f}초, 오디오 지속시간: {metrics_obj.audio_duration:.3f}초")
+            
+            # End-to-end 레이턴시 측정 시작 (사용자 입력 시작점)
+            if self.current_request_start_time is None:
+                self.current_request_start_time = time.time()
+            
+        elif isinstance(metrics_obj, metrics.LLMMetrics):
+            self.metrics_data["llm_total_duration"] += metrics_obj.duration
+            self.metrics_data["llm_count"] += 1
+            logger.debug(f"LLM 메트릭스 - 지속시간: {metrics_obj.duration:.3f}초, TTFT: {metrics_obj.ttft:.3f}초, 토큰/초: {metrics_obj.tokens_per_second:.1f}")
+            
+        elif isinstance(metrics_obj, metrics.TTSMetrics):
+            self.metrics_data["tts_total_duration"] += metrics_obj.duration
+            self.metrics_data["tts_count"] += 1
+            logger.debug(f"TTS 메트릭스 - 지속시간: {metrics_obj.duration:.3f}초, TTFB: {metrics_obj.ttfb:.3f}초, 문자 수: {metrics_obj.characters_count}")
+            
+            # End-to-end 레이턴시 측정 종료 (응답 완료 시점)
+            if self.current_request_start_time is not None:
+                end_to_end_duration = time.time() - self.current_request_start_time
+                self.metrics_data["end_to_end_durations"].append(end_to_end_duration)
+                logger.debug(f"End-to-end 레이턴시: {end_to_end_duration:.3f}초")
+                self.current_request_start_time = None
+            
+        elif isinstance(metrics_obj, metrics.VADMetrics):
+            logger.debug(f"VAD 메트릭스 - 추론 지속시간: {metrics_obj.inference_duration_total:.3f}초, 추론 횟수: {metrics_obj.inference_count}")
+            
+        # STF 모델 레이턴시 측정 (임시 구현 - 실제 STF 메트릭스가 없으므로 TTS 완료 시점에 추정)
+        if isinstance(metrics_obj, metrics.TTSMetrics):
+            # STF 처리 시간 추정 (실제로는 별도 메트릭스 필요)
+            estimated_stf_duration = metrics_obj.audio_duration * 0.1  # 대략적인 STF 처리 시간
+            self.metrics_data["stf_total_duration"] += estimated_stf_duration
+            self.metrics_data["stf_count"] += 1
+            logger.debug(f"STF 메트릭스 (추정) - 지속시간: {estimated_stf_duration:.3f}초")
+    
+    def _log_performance_summary(self):
+        """성능 요약 로깅"""
+        session_duration = time.time() - self.metrics_data["session_start_time"]
+        
+        # 평균 레이턴시 계산
+        avg_stt_latency = self.metrics_data["stt_total_duration"] / max(1, self.metrics_data["stt_count"])
+        avg_llm_latency = self.metrics_data["llm_total_duration"] / max(1, self.metrics_data["llm_count"])
+        avg_tts_latency = self.metrics_data["tts_total_duration"] / max(1, self.metrics_data["tts_count"])
+        avg_stf_latency = self.metrics_data["stf_total_duration"] / max(1, self.metrics_data["stf_count"])
+        
+        # End-to-end 레이턴시 통계 계산
+        end_to_end_durations = self.metrics_data["end_to_end_durations"]
+        avg_end_to_end = sum(end_to_end_durations) / max(1, len(end_to_end_durations))
+        max_end_to_end = max(end_to_end_durations) if end_to_end_durations else 0
+        min_end_to_end = min(end_to_end_durations) if end_to_end_durations else 0
+        
+        performance_summary = {
+            "session_duration": f"{session_duration:.1f}초",
+            "stt_metrics": {
+                "requests": self.metrics_data["stt_count"],
+                "total_duration": f"{self.metrics_data['stt_total_duration']:.3f}초",
+                "avg_latency": f"{avg_stt_latency:.3f}초"
+            },
+            "llm_metrics": {
+                "requests": self.metrics_data["llm_count"],
+                "total_duration": f"{self.metrics_data['llm_total_duration']:.3f}초",
+                "avg_latency": f"{avg_llm_latency:.3f}초"
+            },
+            "tts_metrics": {
+                "requests": self.metrics_data["tts_count"],
+                "total_duration": f"{self.metrics_data['tts_total_duration']:.3f}초",
+                "avg_latency": f"{avg_tts_latency:.3f}초"
+            },
+            "stf_metrics": {
+                "requests": self.metrics_data["stf_count"],
+                "total_duration": f"{self.metrics_data['stf_total_duration']:.3f}초",
+                "avg_latency": f"{avg_stf_latency:.3f}초"
+            },
+            "end_to_end_metrics": {
+                "total_requests": len(end_to_end_durations),
+                "avg_latency": f"{avg_end_to_end:.3f}초",
+                "min_latency": f"{min_end_to_end:.3f}초",
+                "max_latency": f"{max_end_to_end:.3f}초"
+            }
+        }
+        
+        logger.info(f"성능 요약: {performance_summary}")
+    
+    def get_performance_stats(self) -> Dict[str, Any]:
+        """현재 성능 통계 반환"""
+        session_duration = time.time() - self.metrics_data["session_start_time"]
+        
+        # 평균 레이턴시 계산
+        avg_stt_latency = self.metrics_data["stt_total_duration"] / max(1, self.metrics_data["stt_count"])
+        avg_llm_latency = self.metrics_data["llm_total_duration"] / max(1, self.metrics_data["llm_count"])
+        avg_tts_latency = self.metrics_data["tts_total_duration"] / max(1, self.metrics_data["tts_count"])
+        avg_stf_latency = self.metrics_data["stf_total_duration"] / max(1, self.metrics_data["stf_count"])
+        
+        # End-to-end 레이턴시 통계
+        end_to_end_durations = self.metrics_data["end_to_end_durations"]
+        avg_end_to_end = sum(end_to_end_durations) / max(1, len(end_to_end_durations))
+        
+        return {
+            "session_duration": session_duration,
+            "stt_avg_latency": avg_stt_latency,
+            "llm_avg_latency": avg_llm_latency,
+            "tts_avg_latency": avg_tts_latency,
+            "stf_avg_latency": avg_stf_latency,
+            "end_to_end_avg_latency": avg_end_to_end,
+            "total_requests": {
+                "stt": self.metrics_data["stt_count"],
+                "llm": self.metrics_data["llm_count"],
+                "tts": self.metrics_data["tts_count"],
+                "stf": self.metrics_data["stf_count"],
+                "end_to_end": len(end_to_end_durations)
+            }
+        }
     
     def _reset_inactivity_timer(self):
         """사용자 활동 감지 시 타이머 리셋"""
@@ -270,30 +390,46 @@ async def entrypoint(ctx: JobContext):
     # 초기 메타데이터 로깅
     logger.info(f"참가자 초기 메타데이터: {participant.metadata}")
     
+    # 메타데이터에서 사용자 언어 추출
+    user_language = "ko"  # 기본값
+    metadata = {}
+    supported_languages = ["ko", "en", "ja", "zh"]  # 지원하는 언어들
+    
+    try:
+        if participant.metadata:
+            import json
+            metadata = json.loads(participant.metadata)
+            if "deviceLanguage" in metadata:
+                detected_language = metadata["deviceLanguage"]
+                if detected_language in supported_languages:
+                    user_language = detected_language
+                    logger.info(f"사용자 언어 감지: {user_language}")
+                else:
+                    logger.info(f"지원하지 않는 언어 감지: {detected_language}, 기본 언어 사용: {user_language}")
+    except (json.JSONDecodeError, Exception) as e:
+        logger.warning(f"메타데이터 파싱 오류: {e}, 기본 언어 사용: {user_language}")
+    
     # 사용자별 개별 데이터베이스 생성
     db = UserDatabase(participant.identity)
     user_data = db.get_or_create_user(participant.identity)
+    
+    # 사용자 언어 업데이트 (새로운 언어가 감지된 경우)
+    if user_data.language != user_language:
+        db.update_user_language(participant.identity, user_language)
+        user_data.language = user_language
+        logger.info(f"사용자 언어 업데이트: {participant.identity} -> {user_language}")
+    
+    # 메타데이터 저장
+    if metadata:
+        db.update_user_metadata(participant.identity, metadata)
 
     # AgentSession 생성 (STF 클라이언트 포함)
     session = AgentSession(
         vad=ctx.proc.userdata["vad"],
-        # stt=openai.STT(model="gpt-4o-mini-transcribe"),  # OpenAI Whisper STT 모델 사용
-        # stt=deepgram.STT(model="nova-2-general", language="ko"),
-        # llm=openai.LLM(model="gpt-4o"),
-        # llm=openai.realtime.RealtimeModel(model="gpt-4o-realtime-preview-2025-06-03"),
-        # tts=openai.TTS(model="gpt-4o-mini-tts", voice="alloy"),  # 음성 기본 설정 
-        # tts=elevenlabs.TTS(
-        #         voice_id="tZarJVdIxWQ9lIXIV9qg",
-        #         model="eleven_turbo_v2_5",
-        #         voice_settings=elevenlabs.VoiceSettings(
-        #             stability=0.5,
-        #             similarity_boost=0.75,
-        #             style=0.0,
-        #             speed=1.0,
-        #         ),
-        #         encoding="mp3_44100_32",
-        #     ),
     )
+    
+    # 메트릭스 수집을 위한 UsageCollector 생성
+    usage_collector = metrics.UsageCollector()
 
     room_input_options = RoomInputOptions(
         audio_enabled=True,
@@ -317,8 +453,26 @@ async def entrypoint(ctx: JobContext):
     agent_identity = ctx.room.local_participant.identity
     logger.info(f"Agent Identity: {agent_identity}")
 
-    # Agent 인스턴스 생성
-    agent = FaceAgent(user_data, db)
+    # Agent 인스턴스 생성 (사용자 언어 전달)
+    agent = FaceAgent(user_data, db, user_language)
+    
+    # 메트릭스 수집 이벤트 리스너 등록
+    @session.on("metrics_collected")
+    def _on_metrics_collected(ev: MetricsCollectedEvent):
+        # 메트릭스 로깅 (상세 정보 포함)
+        metrics.log_metrics(ev.metrics)
+        
+        # 사용량 수집
+        usage_collector.collect(ev.metrics)
+        
+        # 에이전트의 메트릭스 데이터 업데이트
+        agent._update_metrics_data(ev.metrics)
+        
+        # 실시간 성능 통계 출력 (5개 요청마다)
+        total_requests = agent.metrics_data["stt_count"] + agent.metrics_data["llm_count"] + agent.metrics_data["tts_count"]
+        if total_requests > 0 and total_requests % 5 == 0:
+            stats = agent.get_performance_stats()
+            logger.info(f"실시간 성능 통계 (요청 {total_requests}개): STT평균 {stats['stt_avg_latency']:.3f}초, LLM평균 {stats['llm_avg_latency']:.3f}초, TTS평균 {stats['tts_avg_latency']:.3f}초, STF평균 {stats['stf_avg_latency']:.3f}초, E2E평균 {stats['end_to_end_avg_latency']:.3f}초")
     
     # 세션 시작
     await session.start(
@@ -370,6 +524,16 @@ async def entrypoint(ctx: JobContext):
         if agent.inactivity_task:
             agent.inactivity_task.cancel()
             logger.debug("세션 종료로 인한 비활성화 타이머 취소")
+            
+        # 최종 사용량 통계 로깅
+        summary = usage_collector.get_summary()
+        logger.info(f"세션 종료 - 최종 사용량 통계: {summary}")
+        
+        # 에이전트의 성능 메트릭스 요약 로깅
+        agent._log_performance_summary()
+        
+        # 실시간 성능 모니터링 대시보드 구현 완료
+        logger.info("실시간 성능 모니터링 시스템이 활성화되었습니다.")
         # agent.chat_ctx에서 현재 세션의 메시지들 가져오기
         chat_messages = []
         for item in agent.chat_ctx.items:
@@ -408,26 +572,23 @@ async def entrypoint(ctx: JobContext):
             db.update_last_seen(participant.identity)
             
         # 사용자 요약 정보 로깅
-        summary = db.get_user_summary(participant.identity)
-        logger.info(f"사용자 정보: {summary}")
+        user_summary = db.get_user_summary(participant.identity)
+        logger.info(f"사용자 정보: {user_summary}")
     
-    # RPC 메서드 등록 - 사용자 주의 확인 메시지
-    @ctx.room.local_participant.register_rpc_method("check_attention")
-    async def check_attention(data: rtc.RpcInvocationData) -> str:
-        """사용자의 주의를 환기시키는 RPC 메서드"""
-        logger.info(f"RPC 'check_attention' 호출됨! 호출자: {data.caller_identity}")
+    # RPC 메서드 등록 - 에이전트 중단
+    @ctx.room.local_participant.register_rpc_method("interrupt_agent")
+    async def interrupt_agent(data: rtc.RpcInvocationData) -> None:
+        """클라이언트에서 에이전트를 중단시키는 RPC 메서드"""
+        logger.info(f"RPC 'interrupt_agent' 호출됨! 호출자: {data.caller_identity}")
         
-        # Agent가 사용자에게 주의 환기 메시지를 음성으로 말하기
-        attention_message = "너 지금 뭐해? 내 말 듣고 있어?"
-        logger.info(f"Agent가 음성으로 말할 내용: {attention_message}")
-        
-        # session.say를 사용해서 즉시 음성으로 응답
-        session.say(attention_message, allow_interruptions=True)
-        
-        logger.info(f"RPC 응답 완료: 주의 환기 메시지 전달")
-        return "주의 환기 메시지를 음성으로 전달했습니다."
+        try:
+            # 현재 진행 중인 에이전트 활동 중단
+            await session.interrupt()
+            logger.info("AgentSession interrupt 호출 완료")
+        except Exception as e:
+            logger.error(f"에이전트 중단 처리 중 오류: {e}")
     
-    logger.info("RPC 메서드 'check_attention' 등록 완료")
+    logger.info("RPC 메서드 'interrupt_agent' 등록 완료")
     
 
 if __name__ == "__main__":
