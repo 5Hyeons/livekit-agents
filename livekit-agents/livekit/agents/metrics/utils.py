@@ -26,5 +26,5 @@ def log_metrics(metrics: AgentMetrics, *, logger: logging.Logger | None = None) 
         logger.info(
             f"EOU metrics: end_of_utterance_delay={metrics.end_of_utterance_delay:.2f}, transcription_delay={metrics.transcription_delay:.2f}"  # noqa: E501
         )
-    elif isinstance(metrics, STTMetrics):
-        logger.info(f"STT metrics: audio_duration={metrics.audio_duration:.2f}")
+    # elif isinstance(metrics, STTMetrics):
+    #     logger.info(f"STT metrics: audio_duration={metrics.audio_duration:.2f}")

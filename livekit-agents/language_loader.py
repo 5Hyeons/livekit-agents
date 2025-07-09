@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import random
 from typing import Dict, List, Optional
 from functools import lru_cache
 
@@ -14,10 +15,18 @@ class LanguageConfig:
     
     def __init__(self, language_code: str, config_data: Dict):
         self.language_code = language_code
-        self.base_instructions = config_data.get("base_instructions", "")
+        
+        # base_instructions가 리스트일 경우 줄바꿈으로 합치기
+        base_instructions_raw = config_data.get("base_instructions", "")
+        if isinstance(base_instructions_raw, list):
+            self.base_instructions = "\n".join(base_instructions_raw)
+        else:
+            self.base_instructions = base_instructions_raw
+            
         self.conversation_starters = config_data.get("conversation_starters", [])
         self.greetings = config_data.get("greetings", {})
         self.system_messages = config_data.get("system_messages", {})
+        self.rpc_messages = config_data.get("rpc_messages", {})
 
 @lru_cache(maxsize=10)
 def load_language_config(language_code: str) -> Optional[LanguageConfig]:
@@ -116,7 +125,7 @@ def get_conversation_starters(language_code: str) -> List[str]:
 
 def get_greeting_message(language_code: str, user_name: Optional[str] = None, is_returning_user: bool = False) -> str:
     """
-    언어별 인사 메시지를 반환합니다.
+    언어별 인사 메시지를 랜덤하게 선택해서 반환합니다.
     
     Args:
         language_code: 언어 코드
@@ -124,7 +133,7 @@ def get_greeting_message(language_code: str, user_name: Optional[str] = None, is
         is_returning_user: 재방문 사용자 여부
         
     Returns:
-        인사 메시지 문자열
+        랜덤하게 선택된 인사 메시지 문자열
     """
     config = load_language_config(language_code)
     if not config:
@@ -133,11 +142,23 @@ def get_greeting_message(language_code: str, user_name: Optional[str] = None, is
     
     if is_returning_user and user_name:
         # 재방문 사용자 인사
-        greeting_template = config.greetings.get("returning_user", "Hello, {name}!")
-        return greeting_template.format(name=user_name)
+        greeting_messages = config.greetings.get("returning_user", ["Hello, {name}!"])
+        if not greeting_messages:
+            return "Hello!"
+        
+        # 랜덤하게 메시지 선택
+        selected_message = random.choice(greeting_messages)
+        return selected_message.format(name=user_name)
     else:
         # 새 사용자 인사
-        return config.greetings.get("new_user", "Hello! Please tell me your name.")
+        greeting_messages = config.greetings.get("new_user", ["Hello! Please tell me your name."])
+        if not greeting_messages:
+            return "Hello! Please tell me your name."
+        
+        # 랜덤하게 메시지 선택
+        selected_message = random.choice(greeting_messages)
+        logger.debug(f"인사 메시지 선택됨 ({language_code}, new_user): {selected_message}")
+        return selected_message
 
 def get_system_message(language_code: str, message_key: str, **kwargs) -> str:
     """
@@ -171,6 +192,32 @@ def clear_cache():
 def get_supported_languages() -> List[str]:
     """지원하는 언어 목록을 반환합니다."""
     return SUPPORTED_LANGUAGES.copy()
+
+def get_rpc_message(language_code: str, message_key: str) -> str:
+    """
+    언어별 RPC 메시지를 랜덤하게 선택해서 반환합니다.
+    
+    Args:
+        language_code: 언어 코드
+        message_key: RPC 메시지 키 (예: "check_attention", "morning_greeting")
+        
+    Returns:
+        랜덤하게 선택된 RPC 메시지 문자열
+    """
+    config = load_language_config(language_code)
+    if not config:
+        logger.error(f"언어 설정을 로드할 수 없습니다: {language_code}")
+        return "Hello!"
+    
+    messages = config.rpc_messages.get(message_key, [])
+    if not messages:
+        logger.warning(f"RPC 메시지를 찾을 수 없습니다: {message_key}")
+        return "Hello!"
+    
+    # 랜덤하게 메시지 선택
+    selected_message = random.choice(messages)
+    logger.debug(f"RPC 메시지 선택됨 ({language_code}, {message_key}): {selected_message}")
+    return selected_message
 
 # 테스트 함수
 def test_language_loader():

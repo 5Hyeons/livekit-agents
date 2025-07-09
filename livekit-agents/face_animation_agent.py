@@ -42,7 +42,8 @@ from language_loader import (
     get_base_instructions,
     get_conversation_starters, 
     get_greeting_message,
-    get_system_message
+    get_system_message,
+    get_rpc_message
 )
 
 load_dotenv()  # .env 파일에서 환경 변수 로드
@@ -79,7 +80,7 @@ class FaceAgent(Agent):
         
         # 비활성화 타이머 관련 변수
         self.last_user_activity_time = time.time()
-        self.inactivity_timeout = 30.0  # 30초
+        self.inactivity_timeout = 1500.0
         self.inactivity_task: Optional[asyncio.Task] = None
         self.is_agent_speaking = False
         
@@ -144,11 +145,13 @@ class FaceAgent(Agent):
         if self.user_data.display_name:
             # 이미 이름을 아는 경우 (재방문 사용자)
             greeting = get_greeting_message(self.user_language, self.user_data.display_name, True)
-            self.session.generate_reply(instructions=greeting)
+            await self.session.say(text=greeting, allow_interruptions=False)
+            logger.info(f"재방문 사용자 인사 메시지 전송: {greeting}")
         else:
             # 처음 만나는 경우 (새 사용자)
-            new_user_instruction = get_greeting_message(self.user_language, None, False)
-            self.session.generate_reply(instructions=new_user_instruction)
+            new_user_greeting = get_greeting_message(self.user_language, None, False)
+            await self.session.say(text=new_user_greeting, allow_interruptions=False)
+            logger.info(f"새 사용자 인사 메시지 전송: {new_user_greeting}")
     
     @function_tool
     async def save_user_name(self, name: str):
@@ -227,13 +230,14 @@ class FaceAgent(Agent):
     def _update_metrics_data(self, metrics_obj):
         """메트릭스 데이터 업데이트"""
         if isinstance(metrics_obj, metrics.STTMetrics):
-            self.metrics_data["stt_total_duration"] += metrics_obj.duration
-            self.metrics_data["stt_count"] += 1
-            logger.debug(f"STT 메트릭스 - 지속시간: {metrics_obj.duration:.3f}초, 오디오 지속시간: {metrics_obj.audio_duration:.3f}초")
-            
-            # End-to-end 레이턴시 측정 시작 (사용자 입력 시작점)
-            if self.current_request_start_time is None:
-                self.current_request_start_time = time.time()
+                self.metrics_data["stt_total_duration"] += metrics_obj.duration
+                self.metrics_data["stt_count"] += 1
+                
+                # logger.debug(f"STT 메트릭스 - 지속시간: {metrics_obj.duration:.3f}초, 오디오 지속시간: {metrics_obj.audio_duration:.3f}초")
+                
+                # End-to-end 레이턴시 측정 시작 (사용자 입력 시작점)
+                if self.current_request_start_time is None:
+                    self.current_request_start_time = time.time()
             
         elif isinstance(metrics_obj, metrics.LLMMetrics):
             self.metrics_data["llm_total_duration"] += metrics_obj.duration
@@ -252,8 +256,8 @@ class FaceAgent(Agent):
                 logger.debug(f"End-to-end 레이턴시: {end_to_end_duration:.3f}초")
                 self.current_request_start_time = None
             
-        elif isinstance(metrics_obj, metrics.VADMetrics):
-            logger.debug(f"VAD 메트릭스 - 추론 지속시간: {metrics_obj.inference_duration_total:.3f}초, 추론 횟수: {metrics_obj.inference_count}")
+        # elif isinstance(metrics_obj, metrics.VADMetrics):
+        #     logger.debug(f"VAD 메트릭스 - 추론 지속시간: {metrics_obj.inference_duration_total:.3f}초, 추론 횟수: {metrics_obj.inference_count}")
             
         # STF 모델 레이턴시 측정 (임시 구현 - 실제 STF 메트릭스가 없으므로 TTS 완료 시점에 추정)
         if isinstance(metrics_obj, metrics.TTSMetrics):
@@ -469,10 +473,10 @@ async def entrypoint(ctx: JobContext):
         agent._update_metrics_data(ev.metrics)
         
         # 실시간 성능 통계 출력 (5개 요청마다)
-        total_requests = agent.metrics_data["stt_count"] + agent.metrics_data["llm_count"] + agent.metrics_data["tts_count"]
-        if total_requests > 0 and total_requests % 5 == 0:
-            stats = agent.get_performance_stats()
-            logger.info(f"실시간 성능 통계 (요청 {total_requests}개): STT평균 {stats['stt_avg_latency']:.3f}초, LLM평균 {stats['llm_avg_latency']:.3f}초, TTS평균 {stats['tts_avg_latency']:.3f}초, STF평균 {stats['stf_avg_latency']:.3f}초, E2E평균 {stats['end_to_end_avg_latency']:.3f}초")
+        # total_requests = agent.metrics_data["stt_count"] + agent.metrics_data["llm_count"] + agent.metrics_data["tts_count"]
+        # if total_requests > 0 and total_requests % 5 == 0:
+        #     stats = agent.get_performance_stats()
+        #     logger.info(f"실시간 성능 통계 (요청 {total_requests}개): STT평균 {stats['stt_avg_latency']:.3f}초, LLM평균 {stats['llm_avg_latency']:.3f}초, TTS평균 {stats['tts_avg_latency']:.3f}초, STF평균 {stats['stf_avg_latency']:.3f}초, E2E평균 {stats['end_to_end_avg_latency']:.3f}초")
     
     # 세션 시작
     await session.start(
@@ -589,6 +593,99 @@ async def entrypoint(ctx: JobContext):
             logger.error(f"에이전트 중단 처리 중 오류: {e}")
     
     logger.info("RPC 메서드 'interrupt_agent' 등록 완료")
+    
+    # RPC 메서드 등록 - 관심 확인 (1시간+ 무반응)
+    @ctx.room.local_participant.register_rpc_method("check_attention")
+    async def check_attention(data: rtc.RpcInvocationData) -> None:
+        """1시간 이상 무반응 시 관심 확인 RPC 메서드"""
+        logger.info(f"RPC 'check_attention' 호출됨! 호출자: {data.caller_identity}")
+        
+        try:
+            message = get_rpc_message(user_language, "check_attention")
+            await session.say(text=message)
+            logger.info(f"관심 확인 메시지 전송 완료: {message}")
+        except Exception as e:
+            logger.error(f"관심 확인 메시지 처리 중 오류: {e}")
+    
+    # RPC 메서드 등록 - 아침 인사 (6-8시)
+    @ctx.room.local_participant.register_rpc_method("morning_greeting")
+    async def morning_greeting(data: rtc.RpcInvocationData) -> None:
+        """아침 시간대 인사 RPC 메서드"""
+        logger.info(f"RPC 'morning_greeting' 호출됨! 호출자: {data.caller_identity}")
+        
+        try:
+            message = get_rpc_message(user_language, "morning_greeting")
+            await session.say(text=message)
+            logger.info(f"아침 인사 메시지 전송 완료: {message}")
+        except Exception as e:
+            logger.error(f"아침 인사 메시지 처리 중 오류: {e}")
+    
+    # RPC 메서드 등록 - 오전 응원 (8-10시)
+    @ctx.room.local_participant.register_rpc_method("morning_boost")
+    async def morning_boost(data: rtc.RpcInvocationData) -> None:
+        """오전 시간대 응원 RPC 메서드"""
+        logger.info(f"RPC 'morning_boost' 호출됨! 호출자: {data.caller_identity}")
+        
+        try:
+            message = get_rpc_message(user_language, "morning_boost")
+            await session.say(text=message)
+            logger.info(f"오전 응원 메시지 전송 완료: {message}")
+        except Exception as e:
+            logger.error(f"오전 응원 메시지 처리 중 오류: {e}")
+    
+    # RPC 메서드 등록 - 점심 시간 (12-14시)
+    @ctx.room.local_participant.register_rpc_method("lunch_time")
+    async def lunch_time(data: rtc.RpcInvocationData) -> None:
+        """점심 시간 대화 RPC 메서드"""
+        logger.info(f"RPC 'lunch_time' 호출됨! 호출자: {data.caller_identity}")
+        
+        try:
+            message = get_rpc_message(user_language, "lunch_time")
+            await session.say(text=message)
+            logger.info(f"점심 시간 메시지 전송 완료: {message}")
+        except Exception as e:
+            logger.error(f"점심 시간 메시지 처리 중 오류: {e}")
+    
+    # RPC 메서드 등록 - 오후 스트레칭 (16-18시)
+    @ctx.room.local_participant.register_rpc_method("afternoon_stretch")
+    async def afternoon_stretch(data: rtc.RpcInvocationData) -> None:
+        """오후 스트레칭 제안 RPC 메서드"""
+        logger.info(f"RPC 'afternoon_stretch' 호출됨! 호출자: {data.caller_identity}")
+        
+        try:
+            message = get_rpc_message(user_language, "afternoon_stretch")
+            await session.say(text=message)
+            logger.info(f"오후 스트레칭 메시지 전송 완료: {message}")
+        except Exception as e:
+            logger.error(f"오후 스트레칭 메시지 처리 중 오류: {e}")
+    
+    # RPC 메서드 등록 - 저녁 대화 (20-22시)
+    @ctx.room.local_participant.register_rpc_method("evening_chat")
+    async def evening_chat(data: rtc.RpcInvocationData) -> None:
+        """저녁 시간 대화 RPC 메서드"""
+        logger.info(f"RPC 'evening_chat' 호출됨! 호출자: {data.caller_identity}")
+        
+        try:
+            message = get_rpc_message(user_language, "evening_chat")
+            await session.say(text=message)
+            logger.info(f"저녁 대화 메시지 전송 완료: {message}")
+        except Exception as e:
+            logger.error(f"저녁 대화 메시지 처리 중 오류: {e}")
+    
+    # RPC 메서드 등록 - 늦은 밤 케어 (0-2시)
+    @ctx.room.local_participant.register_rpc_method("late_night_care")
+    async def late_night_care(data: rtc.RpcInvocationData) -> None:
+        """늦은 밤 케어 RPC 메서드"""
+        logger.info(f"RPC 'late_night_care' 호출됨! 호출자: {data.caller_identity}")
+        
+        try:
+            message = get_rpc_message(user_language, "late_night_care")
+            await session.say(text=message)
+            logger.info(f"늦은 밤 케어 메시지 전송 완료: {message}")
+        except Exception as e:
+            logger.error(f"늦은 밤 케어 메시지 처리 중 오류: {e}")
+    
+    logger.info("모든 RPC 메서드 등록 완료: check_attention, morning_greeting, morning_boost, lunch_time, afternoon_stretch, evening_chat, late_night_care")
     
 
 if __name__ == "__main__":
