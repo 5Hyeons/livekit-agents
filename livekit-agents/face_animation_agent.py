@@ -78,12 +78,6 @@ class FaceAgent(Agent):
         self.db = db
         self.user_language = user_language
         
-        # 비활성화 타이머 관련 변수
-        self.last_user_activity_time = time.time()
-        self.inactivity_timeout = 1500.0
-        self.inactivity_task: Optional[asyncio.Task] = None
-        self.is_agent_speaking = False
-        
         # 언어별 대화 시작 메시지 로드
         self.conversation_starters = get_conversation_starters(self.user_language)
         
@@ -139,9 +133,6 @@ class FaceAgent(Agent):
     async def on_enter(self): 
         logger.info(f"FaceAgent on_enter for user: {self.user_data.participant_id}")
         
-        # 활동 시간 초기화
-        self.last_user_activity_time = time.time()
-        
         if self.user_data.display_name:
             # 이미 이름을 아는 경우 (재방문 사용자)
             greeting = get_greeting_message(self.user_language, self.user_data.display_name, True)
@@ -172,31 +163,6 @@ class FaceAgent(Agent):
         result = get_system_message(self.user_language, "name_saved", name=name)
         return result
     
-    def _start_inactivity_timer(self):
-        """비활성화 타이머 시작 - 에이전트가 말하지 않을 때만 시작"""
-        # 에이전트가 현재 말하고 있으면 타이머 시작하지 않음
-        if self.is_agent_speaking:
-            return
-            
-        if self.inactivity_task:
-            self.inactivity_task.cancel()
-        
-        async def inactivity_check():
-            try:
-                await asyncio.sleep(self.inactivity_timeout)
-                
-                # 에이전트가 현재 말하고 있지 않은 경우에만 대화 시작
-                if not self.is_agent_speaking:
-                    await self._initiate_conversation()
-                else:
-                    logger.debug("타이머 만료 시점에 에이전트가 말하는 중이므로 대화 시작 취소")
-                    
-            except asyncio.CancelledError:
-                logger.debug("비활성화 타이머 취소됨")
-        
-        logger.debug(f"{self.inactivity_timeout}초 비활성화 타이머 시작")
-        self.inactivity_task = asyncio.create_task(inactivity_check())
-    
     async def _initiate_conversation(self):
         """비활성화 시 대화 시작"""
         try:
@@ -220,9 +186,6 @@ class FaceAgent(Agent):
             if "no activity context found" in error_msg or "agent is not running" in error_msg:
                 # 세션이 종료된 정상적인 상황
                 logger.debug(f"세션 종료로 인한 대화 시작 취소: {error_msg}")
-                # 타이머 정리
-                if self.inactivity_task:
-                    self.inactivity_task.cancel()
             else:
                 # 다른 예외는 여전히 오류로 처리
                 logger.error(f"대화 시작 중 오류 발생: {e}")
@@ -344,38 +307,6 @@ class FaceAgent(Agent):
                 "end_to_end": len(end_to_end_durations)
             }
         }
-    
-    def _reset_inactivity_timer(self):
-        """사용자 활동 감지 시 타이머 리셋"""
-        self.last_user_activity_time = time.time()
-        
-        if self.inactivity_task:
-            self.inactivity_task.cancel()
-            logger.debug("사용자 활동으로 인한 타이머 취소")
-        
-        # 새로운 타이머는 에이전트가 응답을 마친 후에 시작
-        # (_on_agent_speech_end()에서 자동으로 시작됨)
-    
-    def _on_user_speech_detected(self):
-        """사용자 음성 감지 시 호출"""
-        logger.debug("사용자 음성 감지 - 타이머 리셋")
-        self._reset_inactivity_timer()
-    
-    def _on_agent_speech_start(self):
-        """에이전트 음성 시작 시 호출"""
-        self.is_agent_speaking = True
-        logger.debug("에이전트 음성 시작 - 타이머 정지")
-        # 에이전트가 말하는 동안 타이머 정지
-        if self.inactivity_task:
-            self.inactivity_task.cancel()
-    
-    def _on_agent_speech_end(self):
-        """에이전트 음성 종료 시 호출"""
-        self.is_agent_speaking = False
-        logger.debug("에이전트 음성 종료 - 타이머 시작")
-        # 에이전트가 말을 끝내면 타이머 시작 (사용자 응답 대기)
-        self._start_inactivity_timer()
-    
 
 def prewarm(proc: JobProcess):
     # VAD 모델 로드
@@ -492,43 +423,17 @@ async def entrypoint(ctx: JobContext):
         """사용자 상태 변경 이벤트 핸들러"""
         logger.info(f"사용자 상태 변경: {ev.old_state} -> {ev.new_state}")
         
-        if ev.new_state == "speaking":
-            # 사용자가 말하기 시작하면 타이머 리셋
-            agent._on_user_speech_detected()
-        # elif ev.new_state == "away":
-        #     # 사용자가 떠나면 타이머 정지
-        #     if agent.inactivity_task:
-        #         agent.inactivity_task.cancel()
-    
     # 에이전트 상태 변경 이벤트 리스너 등록
     @session.on("agent_state_changed")
     def on_agent_state_changed(ev):
         """에이전트 상태 변경 이벤트 핸들러"""
         logger.info(f"에이전트 상태 변경: {ev.old_state} -> {ev.new_state}")
-        
-        if ev.new_state == "speaking":
-            # 에이전트가 말하기 시작 - 타이머 정지
-            agent._on_agent_speech_start()
-        elif ev.old_state == "speaking" and ev.new_state in ["idle", "listening"]:
-            # 에이전트가 말하기 종료하고 대기 상태로 전환 - 타이머 시작
-            agent._on_agent_speech_end()
-        elif ev.new_state == "thinking":
-            # 에이전트가 생각하는 중 - 아직 타이머 시작하지 않음
-            logger.debug("에이전트가 생각하는 중 - 타이머 대기")
-        elif ev.old_state == "thinking" and ev.new_state == "idle":
-            # 에이전트가 생각을 끝내고 대기 상태 - 타이머 시작
-            logger.debug("에이전트 생각 완료 - 타이머 시작")
-            agent._on_agent_speech_end()
     
     # 세션 종료 이벤트 핸들러 - 채팅 기록 저장 및 타이머 정리
     @session.on("close")
     def on_session_close():
         """세션 종료 시 채팅 기록을 데이터베이스에 저장하고 타이머 정리"""
-        # 비활성화 타이머 정리
-        if agent.inactivity_task:
-            agent.inactivity_task.cancel()
-            logger.debug("세션 종료로 인한 비활성화 타이머 취소")
-            
+        
         # 최종 사용량 통계 로깅
         summary = usage_collector.get_summary()
         logger.info(f"세션 종료 - 최종 사용량 통계: {summary}")
