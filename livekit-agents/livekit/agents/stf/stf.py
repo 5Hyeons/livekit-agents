@@ -373,14 +373,14 @@ class STFTritonStream:
         animations_generated = 0
         start_time = time.time()
 
-        logger.info(f"STF Triton 프레임 처리 시작 (서버: {self._stf._triton_url}, 모델: {self._stf._model_name}, 청크 크기: {self._chunk_duration_sec}초)")
+        # logger.info(f"STF Triton 프레임 처리 시작 (서버: {self._stf._triton_url}, 모델: {self._stf._model_name}, 청크 크기: {self._chunk_duration_sec}초)")
 
         try:
             while True:
                 frame = await self._audio_queue.get()
 
                 if frame is None:
-                    logger.debug("STF Triton 입력 종료 신호 수신")
+                    # logger.debug("STF Triton 입력 종료 신호 수신")
                     break
 
                 frames_processed += 1
@@ -442,10 +442,10 @@ class STFTritonStream:
             logger.error(f"STF Triton 프레임 처리 중 오류 발생: {e}", exc_info=True)
         finally:
             duration = time.time() - start_time
-            logger.info(
-                f"STF Triton 프레임 처리 완료: {frames_processed}개 오디오 프레임 처리, "
-                f"{animations_generated}개 애니메이션 생성, 총 소요 시간: {duration:.2f}초"
-            )
+            # logger.info(
+            #     f"STF Triton 프레임 처리 완료: {frames_processed}개 오디오 프레임 처리, "
+            #     f"{animations_generated}개 애니메이션 생성, 총 소요 시간: {duration:.2f}초"
+            # )
             # Use None as the end marker
             await self._blendshape_frames.put(None)
 
@@ -571,14 +571,14 @@ class STFTritonStreamPair:
         start_time = time.time()
         self._original_sample_rate = None  # 원본 샘플레이트 저장
 
-        logger.info(f"STF Triton Pair 프레임 처리 시작 (서버: {self._stf._triton_url}, 모델: {self._stf._model_name}, 청크 크기: {self._chunk_duration_sec}초)")
+        # logger.info(f"STF Triton Pair 프레임 처리 시작 (서버: {self._stf._triton_url}, 모델: {self._stf._model_name}, 청크 크기: {self._chunk_duration_sec}초)")
 
         try:
             while True:
                 frame = await self._audio_queue.get()
 
                 if frame is None:
-                    logger.debug("STF Triton Pair 입력 종료 신호 수신")
+                    # logger.debug("STF Triton Pair 입력 종료 신호 수신")
                     break
 
                 frames_processed += 1
@@ -586,7 +586,7 @@ class STFTritonStreamPair:
                 # 첫 프레임에서 샘플레이트 저장
                 if self._original_sample_rate is None:
                     self._original_sample_rate = frame.sample_rate
-                    logger.info(f"원본 오디오 샘플레이트: {self._original_sample_rate}Hz")
+                    # logger.info(f"원본 오디오 샘플레이트: {self._original_sample_rate}Hz")
 
                 # Convert frame data to int16 (원본 타입 유지)
                 frame_data = np.frombuffer(frame.data, dtype=np.int16)
@@ -664,10 +664,10 @@ class STFTritonStreamPair:
             logger.error(f"STF Triton Pair 프레임 처리 중 오류 발생: {e}", exc_info=True)
         finally:
             duration = time.time() - start_time
-            logger.info(
-                f"STF Triton Pair 프레임 처리 완료: {frames_processed}개 오디오 프레임 처리, "
-                f"{animations_generated}개 애니메이션 생성, 총 소요 시간: {duration:.2f}초"
-            )
+            # logger.info(
+            #     f"STF Triton Pair 프레임 처리 완료: {frames_processed}개 오디오 프레임 처리, "
+            #     f"{animations_generated}개 애니메이션 생성, 총 소요 시간: {duration:.2f}초"
+            # )
             # Use None as the end marker
             await self._output_queue.put(None)
 

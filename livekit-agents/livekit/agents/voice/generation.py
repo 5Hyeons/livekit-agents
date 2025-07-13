@@ -872,7 +872,7 @@ async def _animation_forwarding_task(
     """
     frames_count = 0
     start_time = time.time()
-    logger.info("애니메이션 데이터 전달 작업 시작")
+    # logger.info("애니메이션 데이터 전달 작업 시작")
     
     try:
         async for anim_data in stf_output:
@@ -882,8 +882,8 @@ async def _animation_forwarding_task(
             await asyncio.sleep(1/200)
             frames_count += 1
             
-            if frames_count == 1:
-                logger.info("첫 번째 애니메이션 프레임 전송 완료")
+            # if frames_count == 1:
+            #     logger.info("첫 번째 애니메이션 프레임 전송 완료")
             
             # if frames_count % 120 == 0:  # 120 프레임마다 로그 (약 2초 분량)
             #     elapsed = time.time() - start_time
@@ -892,7 +892,7 @@ async def _animation_forwarding_task(
             
             if not out.first_frame_fut.done():
                 out.first_frame_fut.set_result(None)
-                logger.debug("첫 번째 애니메이션 프레임 전송 알림 완료")
+                # logger.debug("첫 번째 애니메이션 프레임 전송 알림 완료")
     except Exception as e:
         logger.error(f"애니메이션 데이터 전송 중 오류 발생: {e}", exc_info=True)
         raise
@@ -902,6 +902,6 @@ async def _animation_forwarding_task(
         
         duration = time.time() - start_time
         fps = frames_count / duration if duration > 0 else 0
-        logger.info(f"애니메이션 데이터 전송 완료: {frames_count}개 프레임, 소요 시간: {duration:.2f}초, 평균 FPS: {fps:.1f}")
+        # logger.info(f"애니메이션 데이터 전송 완료: {frames_count}개 프레임, 소요 시간: {duration:.2f}초, 평균 FPS: {fps:.1f}")
         animation_output.flush()
 
