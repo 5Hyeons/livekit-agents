@@ -15,6 +15,7 @@ from .agent import ModelSettings
 
 # TYPE_CHECKING 임포트 추가
 from typing import TYPE_CHECKING
+
 if TYPE_CHECKING:
     from ..stf import AnimationData
 
@@ -247,25 +248,25 @@ class VideoOutput(ABC):
 # (AnimationData 클래스는 stf 모듈로 이동됨)
 class AnimationDataOutput(ABC):
     """STF(Speech-To-Face)에서 생성된 애니메이션 데이터를 처리하는 추상 클래스입니다."""
-    
-    def __init__(self, *, next_in_chain: 'AnimationDataOutput' | None = None) -> None:
+
+    def __init__(self, *, next_in_chain: "AnimationDataOutput" | None = None) -> None:
         self._next_in_chain = next_in_chain
-    
+
     @abstractmethod
     async def capture_frame(self, data: "AnimationData") -> None:
         """애니메이션 프레임 데이터를 캡처합니다."""
         pass
-    
+
     @abstractmethod
     def flush(self) -> None:
         """현재 데이터 스트림을 플러시합니다."""
         pass
-    
+
     def on_attached(self) -> None:
         """출력이 연결될 때 호출됩니다."""
         if self._next_in_chain:
             self._next_in_chain.on_attached()
-    
+
     def on_detached(self) -> None:
         """출력이 분리될 때 호출됩니다."""
         if self._next_in_chain:

@@ -73,6 +73,14 @@ class Agent:
         self._activity: AgentActivity | None = None
 
     @property
+    def label(self) -> str:
+        """
+        Returns:
+            str: The label of the agent.
+        """
+        return f"{type(self).__module__}.{type(self).__name__}"
+
+    @property
     def instructions(self) -> str:
         """
         Returns:
@@ -296,10 +304,14 @@ class Agent:
             rtc.AudioFrame: Audio frames synthesized from the provided text.
         """
         return Agent.default.tts_node(self, text, model_settings)
-    
+
     def stf_node(
         self, audio: AsyncIterable[rtc.AudioFrame], model_settings: ModelSettings
-    ) -> AsyncIterable[stf.AnimationData] | Coroutine[Any, Any, AsyncIterable[stf.AnimationData]] | Coroutine[Any, Any, None]:
+    ) -> (
+        AsyncIterable[stf.AnimationData]
+        | Coroutine[Any, Any, AsyncIterable[stf.AnimationData]]
+        | Coroutine[Any, Any, None]
+    ):
         """
         오디오에서 얼굴 애니메이션 데이터를 생성하는 파이프라인의 노드입니다.
 
@@ -432,18 +444,18 @@ class Agent:
 
             # STF 스트림 생성 및 오디오 프레임 전달
             async with activity.stf.stream() as stream:
-                
+
                 @utils.log_exceptions(logger=logger)
                 async def _forward_input():
                     async for frame in audio:
                         stream.push_frame(frame)
-                    
+
                     # 입력 종료 표시
                     stream.end_input()
-                
+
                 # 오디오 전달 태스크 시작
                 forward_task = asyncio.create_task(_forward_input())
-                
+
                 try:
                     # 생성된 애니메이션 데이터 반환 (이전에는 비디오 프레임이었음)
                     async for anim_data in stream:
@@ -537,7 +549,7 @@ class Agent:
             NotGivenOr[tts.TTS | None]: An optional TTS component for generating audio output.
         """  # noqa: E501
         return self._tts
-    
+
     @property
     def stf(self) -> NotGivenOr[stf.STF | None]:
         """

@@ -200,8 +200,7 @@ class RoomIO:
         if self._output_options.animation_enabled:
             # self._animation_output = self._create_animation_output(self._participant_identity)
             self._animation_output = _ParticipantAnimationOutput(
-                self._room,
-                participant=self._participant_identity
+                self._room, participant=self._participant_identity
             )
             logger.info("애니메이션 데이터 출력 활성화됨")
 
@@ -536,9 +535,7 @@ class RoomIO:
     def _create_animation_output(
         self, participant_identity: str | None
     ) -> _ParticipantAnimationOutput:
-        return _ParticipantAnimationOutput(
-            room=self._room, participant=participant_identity
-        )
+        return _ParticipantAnimationOutput(room=self._room, participant=participant_identity)
 
     def _update_animation_output(
         self, output: _ParticipantAnimationOutput | None, participant_identity: str | None

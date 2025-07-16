@@ -30,6 +30,7 @@ import jwt
 from livekit import api, rtc
 from livekit.protocol import agent, models
 
+from .cli import cli
 from .ipc.inference_executor import InferenceExecutor
 from .log import logger
 from .types import NOT_GIVEN, NotGivenOr
@@ -109,7 +110,6 @@ class JobContext:
         self._on_connect = on_connect
         self._on_shutdown = on_shutdown
         self._shutdown_callbacks: list[Callable[[str], Coroutine[None, None, None]]] = []
-        self._tracing_callbacks: list[Callable[[], Coroutine[None, None, None]]] = []
         self._participant_entrypoints: list[
             tuple[
                 JobContext._PARTICIPANT_ENTRYPOINT_CALLBACK,
@@ -217,15 +217,6 @@ class JobContext:
         """
         self._log_fields = fields
 
-    def add_tracing_callback(
-        self,
-        callback: Callable[[], Coroutine[None, None, None]],
-    ) -> None:
-        """
-        Add a callback to be called when the job is about to receive a new tracing request.
-        """
-        self._tracing_callbacks.append(callback)
-
     def add_shutdown_callback(
         self,
         callback: Callable[[], Coroutine[None, None, None]]
@@ -293,6 +284,12 @@ class JobContext:
 
     def delete_room(self) -> asyncio.Future[api.DeleteRoomResponse]:  # type: ignore
         """Deletes the room and disconnects all participants."""
+        if cli.CLI_ARGUMENTS is not None and cli.CLI_ARGUMENTS.console:
+            logger.warning("job_ctx.delete_room() is not executed while in console mode")
+            fut = asyncio.Future[api.DeleteRoomResponse]()
+            fut.set_result(api.DeleteRoomResponse())
+            return fut
+
         task = asyncio.create_task(
             self.api.room.delete_room(api.DeleteRoomRequest(room=self._room.name))
         )
@@ -322,6 +319,12 @@ class JobContext:
         Make sure you have an outbound SIP trunk created in LiveKit.
         See https://docs.livekit.io/sip/trunk-outbound/ for more information.
         """
+        if cli.CLI_ARGUMENTS is not None and cli.CLI_ARGUMENTS.console:
+            logger.warning("job_ctx.add_sip_participant() is not executed while in console mode")
+            fut = asyncio.Future[api.SIPParticipantInfo]()
+            fut.set_result(api.SIPParticipantInfo())
+            return fut
+
         task = asyncio.create_task(
             self.api.sip.create_sip_participant(
                 api.CreateSIPParticipantRequest(
@@ -359,6 +362,14 @@ class JobContext:
         Make sure you have enabled call transfer on your provider SIP trunk.
         See https://docs.livekit.io/sip/transfer-cold/ for more information.
         """
+        if cli.CLI_ARGUMENTS is not None and cli.CLI_ARGUMENTS.console:
+            logger.warning(
+                "job_ctx.transfer_sip_participant() is not executed while in console mode"
+            )
+            fut = asyncio.Future[api.SIPParticipantInfo]()
+            fut.set_result(api.SIPParticipantInfo())
+            return fut
+
         if isinstance(participant, rtc.RemoteParticipant):
             assert participant.kind == rtc.ParticipantKind.PARTICIPANT_KIND_SIP, (
                 "Participant must be a SIP participant"

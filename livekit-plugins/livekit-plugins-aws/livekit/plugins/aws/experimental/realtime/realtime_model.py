@@ -1,5 +1,8 @@
+# mypy: disable-error-code=unused-ignore
+
 from __future__ import annotations
 
+import ast
 import asyncio
 import base64
 import json
@@ -10,7 +13,7 @@ import weakref
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any, Callable, Literal, cast
 
 import boto3
 from aws_sdk_bedrock_runtime.client import (
@@ -33,11 +36,9 @@ from smithy_core.aio.interfaces.identity import IdentityResolver
 from livekit import rtc
 from livekit.agents import (
     APIStatusError,
-    ToolError,
     llm,
     utils,
 )
-from livekit.agents.llm.realtime import RealtimeSession
 from livekit.agents.metrics import RealtimeModelMetrics
 from livekit.agents.types import NOT_GIVEN, NotGivenOr
 from livekit.agents.utils import is_given
@@ -150,12 +151,12 @@ class _ResponseGeneration:
     speculative_messages: dict[str, str] = field(default_factory=dict)
     tool_messages: dict[str, str] = field(default_factory=dict)
     output_text: str = ""  # agent ASR text
-    _created_timestamp: str = field(default_factory=datetime.now().isoformat())
+    _created_timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
     _first_token_timestamp: float | None = None
     _completed_timestamp: float | None = None
 
 
-class Boto3CredentialsResolver(IdentityResolver):
+class Boto3CredentialsResolver(IdentityResolver):  # type: ignore[misc]
     """IdentityResolver implementation that sources AWS credentials from boto3.
 
     The resolver delegates to the default boto3.Session() credential chain which
@@ -164,10 +165,10 @@ class Boto3CredentialsResolver(IdentityResolver):
     passed into Bedrock runtime clients.
     """
 
-    def __init__(self):
-        self.session = boto3.Session()
+    def __init__(self) -> None:
+        self.session = boto3.Session()  # type: ignore[attr-defined]
 
-    async def get_identity(self, **kwargs):
+    async def get_identity(self, **kwargs: Any) -> AWSCredentialsIdentity:
         """Asynchronously resolve AWS credentials.
 
         This method is invoked by the Bedrock runtime client whenever a new request needs to be
@@ -238,6 +239,7 @@ class RealtimeModel(llm.RealtimeModel):
                 turn_detection=True,
                 user_transcription=True,
                 auto_tool_reply_generation=True,
+                audio_output=True,
             )
         )
         self.model_id = "amazon.nova-sonic-v1:0"
@@ -247,7 +249,7 @@ class RealtimeModel(llm.RealtimeModel):
         self.temperature = temperature
         self.top_p = top_p
         self._opts = _RealtimeOptions(
-            voice=voice if is_given(voice) else "tiffany",
+            voice=cast(VOICE_ID, voice) if is_given(voice) else "tiffany",
             temperature=temperature if is_given(temperature) else DEFAULT_TEMPERATURE,
             top_p=top_p if is_given(top_p) else DEFAULT_TOP_P,
             max_tokens=max_tokens if is_given(max_tokens) else DEFAULT_MAX_TOKENS,
@@ -295,7 +297,7 @@ class RealtimeSession(  # noqa: F811
                 inference options and the Smithy Bedrock client configuration.
         """
         super().__init__(realtime_model)
-        self._realtime_model = realtime_model
+        self._realtime_model: RealtimeModel = realtime_model
         self._event_builder = seb(
             prompt_name=str(uuid.uuid4()),
             audio_content_name=str(uuid.uuid4()),
@@ -309,10 +311,10 @@ class RealtimeSession(  # noqa: F811
         self._audio_input_task = None
         self._stream_response = None
         self._bedrock_client = None
+        self._pending_tools: set[str] = set()
         self._is_sess_active = asyncio.Event()
         self._chat_ctx = llm.ChatContext.empty()
         self._tools = llm.ToolContext.empty()
-        self._tool_type_map = {}
         self._tool_results_ch = utils.aio.Chan[dict[str, str]]()
         self._tools_ready = asyncio.get_running_loop().create_future()
         self._instructions_ready = asyncio.get_running_loop().create_future()
@@ -341,16 +343,12 @@ class RealtimeSession(  # noqa: F811
             "other_event": self._handle_other_event,
         }
         self._turn_tracker = _TurnTracker(
-            self.emit, streams_provider=self._current_generation_streams
+            cast(Callable[[str, Any], None], self.emit),
+            cast(Callable[[], None], self.emit_generation_event),
         )
 
-    def _current_generation_streams(
-        self,
-    ) -> tuple[utils.aio.Chan[llm.MessageGeneration], utils.aio.Chan[llm.FunctionCall]]:
-        return (self._current_generation.message_ch, self._current_generation.function_ch)
-
     @utils.log_exceptions(logger=logger)
-    def _initialize_client(self):
+    def _initialize_client(self) -> None:
         """Instantiate the Bedrock runtime client"""
         config = Config(
             endpoint_uri=f"https://bedrock-runtime.{self._realtime_model._opts.region}.amazonaws.com",
@@ -362,11 +360,11 @@ class RealtimeSession(  # noqa: F811
         self._bedrock_client = BedrockRuntimeClient(config=config)
 
     @utils.log_exceptions(logger=logger)
-    async def _send_raw_event(self, event_json):
+    async def _send_raw_event(self, event_json: str) -> None:
         """Low-level helper that serialises event_json and forwards it to the bidirectional stream.
 
         Args:
-            event_json (dict | str): The JSON payload (already in Bedrock wire format) to queue.
+            event_json (str): The JSON payload (already in Bedrock wire format) to queue.
 
         Raises:
             Exception: Propagates any failures returned by the Bedrock runtime client.
@@ -425,21 +423,21 @@ class RealtimeSession(  # noqa: F811
                     input_schema = llm.utils.build_legacy_openai_schema(f, internally_tagged=True)[
                         "parameters"
                     ]
-                    self._tool_type_map[name] = "FunctionTool"
-                else:
+                elif llm.tool_context.is_raw_function_tool(f):
                     description = llm.tool_context.get_raw_function_info(f).raw_schema.get(
                         "description"
                     )
                     input_schema = llm.tool_context.get_raw_function_info(f).raw_schema[
                         "parameters"
                     ]
-                    self._tool_type_map[name] = "RawFunctionTool"
+                else:
+                    continue
 
                 tool = Tool(
                     toolSpec=ToolSpec(
                         name=name,
-                        description=description,
-                        inputSchema=ToolInputSchema(json_=json.dumps(input_schema)),
+                        description=description or "No description provided",
+                        inputSchema=ToolInputSchema(json_=json.dumps(input_schema)),  # type: ignore
                     )
                 )
                 tools.append(tool)
@@ -455,7 +453,7 @@ class RealtimeSession(  # noqa: F811
         return tool_cfg
 
     @utils.log_exceptions(logger=logger)
-    async def initialize_streams(self, is_restart: bool = False):
+    async def initialize_streams(self, is_restart: bool = False) -> None:
         """Open the Bedrock bidirectional stream and spawn background worker tasks.
 
         This coroutine is idempotent and can be invoked again when recoverable
@@ -469,6 +467,7 @@ class RealtimeSession(  # noqa: F811
             if not self._bedrock_client:
                 logger.info("Creating Bedrock client")
                 self._initialize_client()
+            assert self._bedrock_client is not None, "bedrock_client is None"
 
             logger.info("Initializing Bedrock stream")
             self._stream_response = (
@@ -518,7 +517,7 @@ class RealtimeSession(  # noqa: F811
                 self._chat_ctx.truncate(max_items=MAX_MESSAGES)
             init_events = self._event_builder.create_prompt_start_block(
                 voice_id=self._realtime_model._opts.voice,
-                sample_rate=DEFAULT_OUTPUT_SAMPLE_RATE,
+                sample_rate=DEFAULT_OUTPUT_SAMPLE_RATE,  # type: ignore
                 system_content=self._instructions,
                 chat_ctx=self.chat_ctx,
                 tool_configuration=self._serialize_tool_config(),
@@ -542,15 +541,16 @@ class RealtimeSession(  # noqa: F811
             self._is_sess_active.set()
             logger.debug("Stream initialized successfully")
         except Exception as e:
-            self._is_sess_active.set_exception(e)
             logger.debug(f"Failed to initialize stream: {str(e)}")
             raise
         return self
 
     @utils.log_exceptions(logger=logger)
-    def _emit_generation_event(self) -> None:
+    def emit_generation_event(self) -> None:
         """Publish a llm.GenerationCreatedEvent to external subscribers."""
         logger.debug("Emitting generation event")
+        assert self._current_generation is not None, "current_generation is None"
+
         generation_ev = llm.GenerationCreatedEvent(
             message_stream=self._current_generation.message_ch,
             function_stream=self._current_generation.function_ch,
@@ -605,10 +605,12 @@ class RealtimeSession(  # noqa: F811
         """Handle text_output_content_start for both user and assistant roles."""
         log_event_data(event_data)
         role = event_data["event"]["contentStart"]["role"]
+        self._create_response_generation()
 
         # note: does not work if you emit llm.GCE too early (for some reason)
         if role == "USER":
-            self._create_response_generation()
+            assert self._current_generation is not None, "current_generation is None"
+
             content_id = event_data["event"]["contentStart"]["contentId"]
             self._current_generation.user_messages[content_id] = self._current_generation.input_id
 
@@ -616,6 +618,8 @@ class RealtimeSession(  # noqa: F811
             role == "ASSISTANT"
             and "SPECULATIVE" in event_data["event"]["contentStart"]["additionalModelFields"]
         ):
+            assert self._current_generation is not None, "current_generation is None"
+
             text_content_id = event_data["event"]["contentStart"]["contentId"]
             self._current_generation.speculative_messages[text_content_id] = (
                 self._current_generation.response_id
@@ -633,10 +637,15 @@ class RealtimeSession(  # noqa: F811
             # this is b/c audio playback is desynced from text transcription
             # TODO: fix this; possibly via a playback timer
             idx = self._chat_ctx.find_insertion_index(created_at=time.time()) - 1
+            if idx < 0:
+                logger.warning("Barge-in DETECTED but no previous message found")
+                return
+
             logger.debug(
                 f"BARGE-IN DETECTED using idx: {idx} and chat_msg: {self._chat_ctx.items[idx]}"
             )
-            self._chat_ctx.items[idx].interrupted = True
+            if (item := self._chat_ctx.items[idx]).type == "message":
+                item.interrupted = True
             self._close_current_generation()
             return
 
@@ -661,7 +670,7 @@ class RealtimeSession(  # noqa: F811
                 # note: this update is per utterance, not per turn
                 self._update_chat_ctx(role="assistant", text_content=text_content)
 
-    def _update_chat_ctx(self, role: str, text_content: str) -> None:
+    def _update_chat_ctx(self, role: llm.ChatRole, text_content: str) -> None:
         """
         Update the chat context with the latest ASR text while guarding against model limitations:
             a) 40 total messages limit
@@ -672,13 +681,12 @@ class RealtimeSession(  # noqa: F811
             self._chat_ctx.add_message(role=role, content=text_content)
         else:
             prev_utterance = self._chat_ctx.items[-1]
-            if prev_utterance.role == role:
-                if (
-                    len(prev_utterance.content[0].encode("utf-8"))
-                    + len(text_content.encode("utf-8"))
+            if prev_utterance.type == "message" and prev_utterance.role == role:
+                if isinstance(prev_content := prev_utterance.content[0], str) and (
+                    len(prev_content.encode("utf-8")) + len(text_content.encode("utf-8"))
                     < MAX_MESSAGE_SIZE
                 ):
-                    prev_utterance.content[0] = "\n".join([prev_utterance.content[0], text_content])
+                    prev_utterance.content[0] = "\n".join([prev_content, text_content])
                 else:
                     self._chat_ctx.add_message(role=role, content=text_content)
                     if len(self._chat_ctx.items) > MAX_MESSAGES:
@@ -706,6 +714,8 @@ class RealtimeSession(  # noqa: F811
     async def _handle_tool_output_content_start_event(self, event_data: dict) -> None:
         """Track mapping content_id -> response_id for upcoming tool use."""
         log_event_data(event_data)
+        assert self._current_generation is not None, "current_generation is None"
+
         tool_use_content_id = event_data["event"]["contentStart"]["contentId"]
         self._current_generation.tool_messages[tool_use_content_id] = (
             self._current_generation.response_id
@@ -715,6 +725,8 @@ class RealtimeSession(  # noqa: F811
     async def _handle_tool_output_content_event(self, event_data: dict) -> None:
         """Execute the referenced tool locally and forward results back to Bedrock."""
         log_event_data(event_data)
+        assert self._current_generation is not None, "current_generation is None"
+
         tool_use_content_id = event_data["event"]["toolUse"]["contentId"]
         tool_use_id = event_data["event"]["toolUse"]["toolUseId"]
         tool_name = event_data["event"]["toolUse"]["toolName"]
@@ -724,34 +736,38 @@ class RealtimeSession(  # noqa: F811
         ):
             args = event_data["event"]["toolUse"]["content"]
             self._current_generation.function_ch.send_nowait(
-                llm.FunctionCall(
-                    call_id=tool_use_id,
-                    name=tool_name,
-                    arguments=args,
+                llm.FunctionCall(call_id=tool_use_id, name=tool_name, arguments=args)
+            )
+            self._pending_tools.add(tool_use_id)
+
+            # performing these acrobatics in order to release the deadlock
+            # LiveKit will not accept a new generation until the previous one is closed
+            # the issue is that audio data cannot be generated until toolResult is received
+            # however, toolResults only arrive after update_chat_ctx() is invoked
+            # which will only occur after agent speech has completed
+            # therefore we introduce an artificial turn to trigger update_chat_ctx()
+            # TODO: this is messy-- investigate if there is a better way to handle this
+            curr_gen = self._current_generation.messages[self._current_generation.response_id]
+            curr_gen.audio_ch.close()
+            curr_gen.text_ch.close()
+            self._current_generation.message_ch.close()
+            self._current_generation.message_ch = utils.aio.Chan()
+            self._current_generation.function_ch.close()
+            self._current_generation.function_ch = utils.aio.Chan()
+            msg_gen = _MessageGeneration(
+                message_id=self._current_generation.response_id,
+                text_ch=utils.aio.Chan(),
+                audio_ch=utils.aio.Chan(),
+            )
+            self._current_generation.messages[self._current_generation.response_id] = msg_gen
+            self._current_generation.message_ch.send_nowait(
+                llm.MessageGeneration(
+                    message_id=msg_gen.message_id,
+                    text_stream=msg_gen.text_ch,
+                    audio_stream=msg_gen.audio_ch,
                 )
             )
-
-            # note: may need to inject RunContext here...
-            tool_type = self._tool_type_map[tool_name]
-            if tool_type == "FunctionTool":
-                tool_result = await self.tools.function_tools[tool_name](**json.loads(args))
-            elif tool_type == "RawFunctionTool":
-                tool_result = await self.tools.function_tools[tool_name](json.loads(args))
-            else:
-                raise ValueError(f"Unknown tool type: {tool_type}")
-            logger.debug(f"TOOL ARGS: {args}\nTOOL RESULT: {tool_result}")
-
-            # Sonic only accepts Structured Output for tool results
-            # therefore, must JSON stringify ToolError
-            if isinstance(tool_result, ToolError):
-                logger.warning(f"TOOL ERROR: {tool_name} {tool_result.message}")
-                tool_result = {"error": tool_result.message}
-            self._tool_results_ch.send_nowait(
-                {
-                    "tool_use_id": tool_use_id,
-                    "tool_result": tool_result,
-                }
-            )
+            self.emit_generation_event()
 
     async def _handle_tool_output_content_end_event(self, event_data: dict) -> None:
         log_event_data(event_data)
@@ -809,6 +825,14 @@ class RealtimeSession(  # noqa: F811
                 if not curr_gen.text_ch.closed:
                     curr_gen.text_ch.close()
 
+            # TODO: seems not needed, tool_messages[id] is a str, function_ch is closed below?
+            # if self._current_generation.response_id in self._current_generation.tool_messages:
+            #     curr_gen = self._current_generation.tool_messages[
+            #         self._current_generation.response_id
+            #     ]
+            #     if not curr_gen.function_ch.closed:
+            #         curr_gen.function_ch.close()
+
             if not self._current_generation.message_ch.closed:
                 self._current_generation.message_ch.close()
             if not self._current_generation.function_ch.closed:
@@ -860,10 +884,11 @@ class RealtimeSession(  # noqa: F811
         self.emit("metrics_collected", metrics)
 
     @utils.log_exceptions(logger=logger)
-    async def _process_responses(self):
+    async def _process_responses(self) -> None:
         """Background task that drains Bedrock's output stream and feeds the event handlers."""
         try:
             await self._is_sess_active.wait()
+            assert self._stream_response is not None, "stream_response is None"
 
             # note: may need another signal here to block input task until bedrock is ready
             # TODO: save this as a field so we're not re-awaiting it every time
@@ -897,7 +922,6 @@ class RealtimeSession(  # noqa: F811
 
                     else:
                         logger.error(f"Validation error: {ve}")
-                        request_id = ve.split(" ")[0].split("=")[1]
                         self.emit(
                             "error",
                             llm.RealtimeModelError(
@@ -906,7 +930,7 @@ class RealtimeSession(  # noqa: F811
                                 error=APIStatusError(
                                     message=ve.message,
                                     status_code=400,
-                                    request_id=request_id,
+                                    request_id="",
                                     body=ve,
                                     retryable=False,
                                 ),
@@ -945,7 +969,7 @@ class RealtimeSession(  # noqa: F811
                             timestamp=time.monotonic(),
                             label=self._realtime_model._label,
                             error=APIStatusError(
-                                message=e.message,
+                                message=err_msg,
                                 status_code=500,
                                 request_id=request_id,
                                 body=e,
@@ -1019,6 +1043,25 @@ class RealtimeSession(  # noqa: F811
             logger.debug(f"Chat context updated: {self._chat_ctx.items}")
             self._chat_ctx_ready.set_result(True)
 
+        # for each function tool, send the result to aws
+        for item in chat_ctx.items:
+            if item.type != "function_call_output":
+                continue
+
+            if item.call_id not in self._pending_tools:
+                continue
+
+            logger.debug(f"function call output: {item}")
+            self._pending_tools.discard(item.call_id)
+            self._tool_results_ch.send_nowait(
+                {
+                    "tool_use_id": item.call_id,
+                    "tool_result": item.output
+                    if not item.is_error
+                    else f"{{'error': '{item.output}'}}",
+                }
+            )
+
     async def _send_tool_events(self, tool_use_id: str, tool_result: str) -> None:
         """Send tool_result back to Bedrock, grouped under tool_use_id."""
         tool_content_name = str(uuid.uuid4())
@@ -1031,7 +1074,9 @@ class RealtimeSession(  # noqa: F811
             await self._send_raw_event(event)
             # logger.debug(f"Sent tool event: {event}")
 
-    def _tool_choice_adapter(self, tool_choice: llm.ToolChoice) -> dict[str, dict[str, str]] | None:
+    def _tool_choice_adapter(
+        self, tool_choice: llm.ToolChoice | None
+    ) -> dict[str, dict[str, str]] | None:
         """Translate the LiveKit ToolChoice enum into Sonic's JSON schema."""
         if tool_choice == "auto":
             return {"auto": {}}
@@ -1084,7 +1129,7 @@ class RealtimeSession(  # noqa: F811
             yield frame
 
     @utils.log_exceptions(logger=logger)
-    async def _process_audio_input(self):
+    async def _process_audio_input(self) -> None:
         """Background task that feeds audio and tool results into the Bedrock stream."""
         await self._send_raw_event(self._event_builder.create_audio_content_start_event())
         logger.info("Starting audio input processing loop")
@@ -1095,6 +1140,19 @@ class RealtimeSession(  # noqa: F811
                     val = self._tool_results_ch.recv_nowait()
                     tool_result = val["tool_result"]
                     tool_use_id = val["tool_use_id"]
+                    if not isinstance(tool_result, str):
+                        tool_result = json.dumps(tool_result)
+                    else:
+                        try:
+                            json.loads(tool_result)
+                        except json.JSONDecodeError:
+                            try:
+                                tool_result = json.dumps(ast.literal_eval(tool_result))
+                            except Exception:
+                                # return the original value
+                                pass
+
+                    logger.debug(f"Sending tool result: {tool_result}")
                     await self._send_tool_events(tool_use_id, tool_result)
 
                 except utils.aio.channel.ChanEmpty:
@@ -1157,6 +1215,11 @@ class RealtimeSession(  # noqa: F811
         instructions: NotGivenOr[str] = NOT_GIVEN,
     ) -> asyncio.Future[llm.GenerationCreatedEvent]:
         logger.warning("unprompted generation is not supported by Nova Sonic's Realtime API")
+        fut = asyncio.Future[llm.GenerationCreatedEvent]()
+        fut.set_exception(
+            llm.RealtimeError("unprompted generation is not supported by Nova Sonic's Realtime API")
+        )
+        return fut
 
     def commit_audio(self) -> None:
         logger.warning("commit_audio is not supported by Nova Sonic's Realtime API")
@@ -1170,7 +1233,9 @@ class RealtimeSession(  # noqa: F811
     def interrupt(self) -> None:
         logger.warning("interrupt is not supported by Nova Sonic's Realtime API")
 
-    def truncate(self, *, message_id: str, audio_end_ms: int) -> None:
+    def truncate(
+        self, *, message_id: str, audio_end_ms: int, audio_transcript: NotGivenOr[str] = NOT_GIVEN
+    ) -> None:
         logger.warning("truncate is not supported by Nova Sonic's Realtime API")
 
     @utils.log_exceptions(logger=logger)
@@ -1195,19 +1260,22 @@ class RealtimeSession(  # noqa: F811
         # resulting in an error after cancellation
         # however, it's mostly cosmetic-- the event loop will still exit
         # TODO: fix this nit
+        tasks: list[asyncio.Task[Any]] = []
         if self._response_task:
             try:
                 await asyncio.wait_for(self._response_task, timeout=1.0)
             except asyncio.TimeoutError:
                 logger.warning("shutdown of output event loop timed out-- cancelling")
                 self._response_task.cancel()
+            tasks.append(self._response_task)
 
         # must cancel the audio input task before closing the input stream
         if self._audio_input_task and not self._audio_input_task.done():
             self._audio_input_task.cancel()
+            tasks.append(self._audio_input_task)
         if self._stream_response and not self._stream_response.input_stream.closed:
             await self._stream_response.input_stream.close()
 
-        await asyncio.gather(self._response_task, self._audio_input_task, return_exceptions=True)
+        await asyncio.gather(*tasks, return_exceptions=True)
         logger.debug(f"CHAT CONTEXT: {self._chat_ctx.items}")
         logger.info("Session end")

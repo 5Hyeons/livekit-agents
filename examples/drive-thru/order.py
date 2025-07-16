@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import secrets
 import string
 from dataclasses import dataclass
@@ -18,7 +20,7 @@ class OrderedCombo(BaseModel):
     drink_id: str
     drink_size: Literal["M", "L"] | None
     fries_size: Literal["M", "L"]
-    sauce_id: str
+    sauce_id: str | None
 
 
 class OrderedHappy(BaseModel):
@@ -27,7 +29,7 @@ class OrderedHappy(BaseModel):
     meal_id: str
     drink_id: str
     drink_size: Literal["S", "M", "L"] | None
-    sauce_id: str
+    sauce_id: str | None
 
 
 class OrderedRegular(BaseModel):
@@ -38,7 +40,7 @@ class OrderedRegular(BaseModel):
 
 
 OrderedItem = Annotated[
-    Union[OrderedCombo | OrderedHappy | OrderedRegular], Field(discriminator="type")
+    Union[OrderedCombo, OrderedHappy, OrderedRegular], Field(discriminator="type")
 ]
 
 

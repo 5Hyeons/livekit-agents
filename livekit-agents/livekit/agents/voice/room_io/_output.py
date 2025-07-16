@@ -23,6 +23,7 @@ from .. import io
 
 # TYPE_CHECKING 임포트 추가
 from typing import TYPE_CHECKING
+
 if TYPE_CHECKING:
     from ...stf import AnimationData
 from ..transcription import find_micro_track_id
@@ -447,11 +448,11 @@ class _ParticipantAnimationOutput(io.AnimationDataOutput):
         self._room, self._is_delta_stream = room, is_delta_stream
         self._participant_identity: str | None = None
 
-        self._close_task: asyncio.Task | None = None # Task for final close
+        self._close_task: asyncio.Task | None = None  # Task for final close
         self._writer: rtc.ByteStreamWriter | None = None
         self._frames_count = 0
         self._start_time = time.time()
-        self._is_closed = False # Flag to indicate if closed
+        self._is_closed = False  # Flag to indicate if closed
         self._flush_atask: asyncio.Task | None = None
 
         self._reset_state()
@@ -469,7 +470,9 @@ class _ParticipantAnimationOutput(io.AnimationDataOutput):
 
         self.flush()
         self._reset_state()
-        logger.info(f"[_ParticipantAnimationOutput] 초기화: 대상 참가자={self._participant_identity}")
+        logger.info(
+            f"[_ParticipantAnimationOutput] 초기화: 대상 참가자={self._participant_identity}"
+        )
 
     def _reset_state(self) -> None:
         self._current_id = utils.shortuuid("ANIM_")
@@ -477,9 +480,11 @@ class _ParticipantAnimationOutput(io.AnimationDataOutput):
         self._latest_data: "AnimationData" | None = None
         self._sample_rate = 48000
 
-    async def _create_writer(self, attributes: dict[str, str] | None = None) -> rtc.ByteStreamWriter:
+    async def _create_writer(
+        self, attributes: dict[str, str] | None = None
+    ) -> rtc.ByteStreamWriter:
         assert self._participant_identity is not None, "participant_identity is not set"
-        
+
         writer_id = utils.shortuuid("ANIMATION_")
 
         if not attributes:
@@ -489,7 +494,7 @@ class _ParticipantAnimationOutput(io.AnimationDataOutput):
         self._current_id = utils.shortuuid("ANIM_")
         attributes[ATTRIBUTE_ANIMATION_SEGMENT_ID] = self._current_id
         attributes[ATTRIBUTE_ANIMATION_SAMPLE_RATE] = str(self._sample_rate)
-        
+
         return await self._room.local_participant.stream_bytes(
             name=writer_id,
             topic=TOPIC_ANIMATION_STREAM,
@@ -499,7 +504,9 @@ class _ParticipantAnimationOutput(io.AnimationDataOutput):
     async def capture_frame(self, data: "AnimationData") -> None:
         """애니메이션 프레임 데이터를 캡처합니다."""
         if self._participant_identity is None:
-            logger.warning("[ANIM_OUTPUT_SIMPLE] 대상 참가자가 없어 애니메이션 데이터를 전송할 수 없습니다.")
+            logger.warning(
+                "[ANIM_OUTPUT_SIMPLE] 대상 참가자가 없어 애니메이션 데이터를 전송할 수 없습니다."
+            )
             return
 
         if self._flush_atask and not self._flush_atask.done():

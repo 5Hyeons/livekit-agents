@@ -188,7 +188,9 @@ class _ParticipantInputStream(Generic[T], ABC):
             or participant.identity != self._participant_identity
         ):
             logger.info(f"track not available: {publication.track}")
-            logger.info(f"participant identity: {self._participant_identity}, {participant.identity}")
+            logger.info(
+                f"participant identity: {self._participant_identity}, {participant.identity}"
+            )
             logger.info(f"track source: {publication.source}, {self._accepted_sources}")
             return
 
@@ -213,7 +215,9 @@ class _ParticipantAudioInputStream(_ParticipantInputStream[rtc.AudioFrame], Audi
         pre_connect_audio_handler: PreConnectAudioHandler | None,
     ) -> None:
         _ParticipantInputStream.__init__(
-            self, room=room, track_source=rtc.TrackSource.SOURCE_MICROPHONE
+            self,
+            room=room,
+            track_source=rtc.TrackSource.SOURCE_MICROPHONE,
             # self, room=room, track_source=rtc.TrackSource.SOURCE_UNKNOWN
         )
         self._sample_rate = sample_rate

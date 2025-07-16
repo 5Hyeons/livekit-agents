@@ -2,17 +2,19 @@ from __future__ import annotations
 
 import time
 import asyncio
+import functools
 import inspect
+import json
 from collections.abc import AsyncIterable
 from dataclasses import dataclass, field
-from functools import partial
 from typing import TYPE_CHECKING, Any, Callable, Optional, Protocol, runtime_checkable
 
+from opentelemetry import trace
 from pydantic import ValidationError
 
 from livekit import rtc
 
-from .. import debug, llm, utils, stf
+from .. import llm, utils, stf
 from ..llm import (
     ChatChunk,
     ChatContext,
@@ -26,6 +28,7 @@ from ..llm.tool_context import (
     is_raw_function_tool,
 )
 from ..log import logger
+from ..telemetry import trace_types, tracer
 from ..types import USERDATA_TIMED_TRANSCRIPT, NotGivenOr
 from ..utils import aio
 from . import io
@@ -48,6 +51,7 @@ class _LLMGenerationData:
     generated_text: str = ""
     generated_functions: list[llm.FunctionCall] = field(default_factory=list)
     id: str = field(default_factory=lambda: utils.shortuuid("item_"))
+    started_fut: asyncio.Future[None] = field(default_factory=asyncio.Future)
 
 
 def perform_llm_inference(
@@ -59,74 +63,108 @@ def perform_llm_inference(
 ) -> tuple[asyncio.Task[bool], _LLMGenerationData]:
     text_ch = aio.Chan[str]()
     function_ch = aio.Chan[llm.FunctionCall]()
-
     data = _LLMGenerationData(text_ch=text_ch, function_ch=function_ch)
-
-    @utils.log_exceptions(logger=logger)
-    async def _inference_task() -> bool:
-        tools = list(tool_ctx.function_tools.values())
-        llm_node = node(
-            chat_ctx,
-            tools,
-            model_settings,
-        )
-        if asyncio.iscoroutine(llm_node):
-            llm_node = await llm_node
-
-        # update the tool context after llm node
-        tool_ctx.update_tools(tools)
-
-        if isinstance(llm_node, str):
-            data.generated_text = llm_node
-            text_ch.send_nowait(llm_node)
-            return True
-
-        if isinstance(llm_node, AsyncIterable):
-            # forward llm stream to output channels
-            try:
-                async for chunk in llm_node:
-                    # io.LLMNode can either return a string or a ChatChunk
-                    if isinstance(chunk, str):
-                        data.generated_text += chunk
-                        text_ch.send_nowait(chunk)
-
-                    elif isinstance(chunk, ChatChunk):
-                        if not chunk.delta:
-                            continue
-
-                        if chunk.delta.tool_calls:
-                            for tool in chunk.delta.tool_calls:
-                                if tool.type != "function":
-                                    continue
-
-                                fnc_call = llm.FunctionCall(
-                                    id=f"{data.id}/fnc_{len(data.generated_functions)}",
-                                    call_id=tool.call_id,
-                                    name=tool.name,
-                                    arguments=tool.arguments,
-                                )
-                                data.generated_functions.append(fnc_call)
-                                function_ch.send_nowait(fnc_call)
-
-                        if chunk.delta.content:
-                            data.generated_text += chunk.delta.content
-                            text_ch.send_nowait(chunk.delta.content)
-                    else:
-                        logger.warning(
-                            f"LLM node returned an unexpected type: {type(chunk)}",
-                        )
-            finally:
-                if isinstance(llm_node, _ACloseable):
-                    await llm_node.aclose()
-
-            return True
-
-        return False
-
-    llm_task = asyncio.create_task(_inference_task())
+    llm_task = asyncio.create_task(
+        _llm_inference_task(node, chat_ctx, tool_ctx, model_settings, data)
+    )
     llm_task.add_done_callback(lambda _: text_ch.close())
     llm_task.add_done_callback(lambda _: function_ch.close())
+
+    def _cleanup(_: asyncio.Task[bool]) -> None:
+        if not data.started_fut.done():
+            data.started_fut.set_result(None)
+
+    llm_task.add_done_callback(_cleanup)
+
     return llm_task, data
+
+
+@utils.log_exceptions(logger=logger)
+@tracer.start_as_current_span("llm_node")
+async def _llm_inference_task(
+    node: io.LLMNode,
+    chat_ctx: ChatContext,
+    tool_ctx: ToolContext,
+    model_settings: ModelSettings,
+    data: _LLMGenerationData,
+) -> bool:
+    current_span = trace.get_current_span()
+    data.started_fut.set_result(None)
+
+    text_ch, function_ch = data.text_ch, data.function_ch
+    tools = list(tool_ctx.function_tools.values())
+
+    current_span.set_attribute(
+        trace_types.ATTR_CHAT_CTX,
+        json.dumps(
+            chat_ctx.to_dict(exclude_audio=True, exclude_image=True, exclude_timestamp=False)
+        ),
+    )
+    current_span.set_attribute(
+        trace_types.ATTR_FUNCTION_TOOLS, json.dumps(list(tool_ctx.function_tools.keys()))
+    )
+
+    llm_node = node(chat_ctx, tools, model_settings)
+    if asyncio.iscoroutine(llm_node):
+        llm_node = await llm_node
+
+    # update the tool context after llm node
+    tool_ctx.update_tools(tools)
+
+    if isinstance(llm_node, str):
+        data.generated_text = llm_node
+        text_ch.send_nowait(llm_node)
+        current_span.set_attribute(trace_types.ATTR_RESPONSE_TEXT, data.generated_text)
+        return True
+
+    if not isinstance(llm_node, AsyncIterable):
+        return False
+
+    # forward llm stream to output channels
+    try:
+        async for chunk in llm_node:
+            # io.LLMNode can either return a string or a ChatChunk
+            if isinstance(chunk, str):
+                data.generated_text += chunk
+                text_ch.send_nowait(chunk)
+
+            elif isinstance(chunk, ChatChunk):
+                if not chunk.delta:
+                    continue
+
+                if chunk.delta.tool_calls:
+                    for tool in chunk.delta.tool_calls:
+                        if tool.type != "function":
+                            continue
+
+                        fnc_call = llm.FunctionCall(
+                            id=f"{data.id}/fnc_{len(data.generated_functions)}",
+                            call_id=tool.call_id,
+                            name=tool.name,
+                            arguments=tool.arguments,
+                        )
+                        data.generated_functions.append(fnc_call)
+                        function_ch.send_nowait(fnc_call)
+
+                if chunk.delta.content:
+                    data.generated_text += chunk.delta.content
+                    text_ch.send_nowait(chunk.delta.content)
+            else:
+                logger.warning(
+                    f"LLM node returned an unexpected type: {type(chunk)}",
+                )
+    finally:
+        if isinstance(llm_node, _ACloseable):
+            await llm_node.aclose()
+
+    current_span.set_attribute(trace_types.ATTR_RESPONSE_TEXT, data.generated_text)
+    current_span.set_attribute(
+        trace_types.ATTR_RESPONSE_FUNCTION_CALLS,
+        json.dumps(
+            [fnc.model_dump(exclude={"type", "created_at"}) for fnc in data.generated_functions]
+        ),
+    )
+    return True
 
 
 @dataclass
@@ -140,43 +178,53 @@ def perform_tts_inference(
 ) -> tuple[asyncio.Task[bool], _TTSGenerationData]:
     audio_ch = aio.Chan[rtc.AudioFrame]()
     timed_texts_fut = asyncio.Future[Optional[aio.Chan[io.TimedString]]]()
+    data = _TTSGenerationData(audio_ch=audio_ch, timed_texts_fut=timed_texts_fut)
 
-    @utils.log_exceptions(logger=logger)
-    async def _inference_task() -> bool:
-        tts_node = node(input, model_settings)
-        if asyncio.iscoroutine(tts_node):
-            tts_node = await tts_node
-
-        if isinstance(tts_node, AsyncIterable):
-            timed_text_ch = aio.Chan[io.TimedString]()
-            timed_texts_fut.set_result(timed_text_ch)
-
-            async for audio_frame in tts_node:
-                for text in audio_frame.userdata.get(USERDATA_TIMED_TRANSCRIPT, []):
-                    timed_text_ch.send_nowait(text)
-
-                audio_ch.send_nowait(audio_frame)
-
-            return True
-
-        timed_texts_fut.set_result(None)
-        return False
-
-    tts_task = asyncio.create_task(_inference_task())
+    tts_task = asyncio.create_task(_tts_inference_task(node, input, model_settings, data))
 
     def _inference_done(_: asyncio.Task[bool]) -> None:
         if timed_texts_fut.done() and (timed_text_ch := timed_texts_fut.result()):
             timed_text_ch.close()
+
         audio_ch.close()
 
     tts_task.add_done_callback(_inference_done)
 
-    return tts_task, _TTSGenerationData(audio_ch=audio_ch, timed_texts_fut=timed_texts_fut)
+    return tts_task, data
+
+
+@utils.log_exceptions(logger=logger)
+@tracer.start_as_current_span("tts_node")
+async def _tts_inference_task(
+    node: io.TTSNode,
+    input: AsyncIterable[str],
+    model_settings: ModelSettings,
+    data: _TTSGenerationData,
+) -> bool:
+    audio_ch, timed_texts_fut = data.audio_ch, data.timed_texts_fut
+    tts_node = node(input, model_settings)
+    if asyncio.iscoroutine(tts_node):
+        tts_node = await tts_node
+
+    if isinstance(tts_node, AsyncIterable):
+        timed_text_ch = aio.Chan[io.TimedString]()
+        timed_texts_fut.set_result(timed_text_ch)
+
+        async for audio_frame in tts_node:
+            for text in audio_frame.userdata.get(USERDATA_TIMED_TRANSCRIPT, []):
+                timed_text_ch.send_nowait(text)
+
+            audio_ch.send_nowait(audio_frame)
+        return True
+
+    timed_texts_fut.set_result(None)
+    return False
 
 
 @dataclass
 class _STFGenerationData:
     """STF 생성 데이터."""
+
     anim_ch: aio.Chan[stf.AnimationData]
 
 
@@ -188,14 +236,14 @@ def perform_stf_inference(
 ) -> tuple[asyncio.Task, _STFGenerationData]:
     """
     STF 모델 추론을 수행하고 애니메이션 데이터를 생성합니다.
-    
+
     Args:
         node: STF 모델 노드 (Agent.stf_node)
         input: 오디오 프레임 스트림
         model_settings: 모델 설정
-        
+
     Returns:
-        tuple[asyncio.Task, _STFGenerationData]: 
+        tuple[asyncio.Task, _STFGenerationData]:
             STF 생성 작업과 STF 생성 데이터를 포함하는 튜플
     """
     anim_ch = aio.Chan[stf.AnimationData]()
@@ -213,7 +261,7 @@ async def _stf_inference_task(
 ) -> None:
     """
     STF 모델 추론을 수행하고 결과를 채널에 전달하는 작업입니다.
-    
+
     Args:
         node: STF 모델 노드 (Agent.stf_node)
         input: 오디오 프레임 스트림
@@ -223,19 +271,19 @@ async def _stf_inference_task(
     frames_count = 0
     start_time = time.time()
     # logger.info("STF 추론 작업 시작")
-    
+
     try:
         # node가 코루틴인 경우 실행
         # logger.debug("STF 노드 실행 중")
         stf_result = node(input, model_settings)
         if asyncio.iscoroutine(stf_result):
             stf_result = await stf_result
-            
+
         # 애니메이션 데이터 생성이 없는 경우
         if stf_result is None:
             logger.warning("STF 결과가 없습니다. 애니메이션 데이터가 생성되지 않았습니다.")
             return
-            
+
         # 각 애니메이션 데이터를 채널로 전달
         # logger.debug("애니메이션 데이터 스트림 처리 시작")
         async for anim_data in stf_result:
@@ -282,7 +330,7 @@ async def _text_forwarding_task(
             if not out.first_text_fut.done():
                 out.first_text_fut.set_result(None)
 
-            await asyncio.sleep(1/5)
+            await asyncio.sleep(1 / 5)
     finally:
         if isinstance(source, _ACloseable):
             await source.aclose()
@@ -359,8 +407,8 @@ async def _audio_forwarding_task(
 
 @dataclass
 class _ToolOutput:
-    output: list[_PythonOutput]
-    first_tool_fut: asyncio.Future[None]
+    output: list[ToolExecutionOutput]
+    first_tool_started_fut: asyncio.Future[None]
 
 
 def perform_tool_executions(
@@ -370,8 +418,10 @@ def perform_tool_executions(
     tool_ctx: ToolContext,
     tool_choice: NotGivenOr[llm.ToolChoice],
     function_stream: AsyncIterable[llm.FunctionCall],
+    tool_execution_started_cb: Callable[[llm.FunctionCall], Any],
+    tool_execution_completed_cb: Callable[[ToolExecutionOutput], Any],
 ) -> tuple[asyncio.Task[None], _ToolOutput]:
-    tool_output = _ToolOutput(output=[], first_tool_fut=asyncio.Future())
+    tool_output = _ToolOutput(output=[], first_tool_started_fut=asyncio.Future())
     task = asyncio.create_task(
         _execute_tools_task(
             session=session,
@@ -380,6 +430,8 @@ def perform_tool_executions(
             tool_choice=tool_choice,
             function_stream=function_stream,
             tool_output=tool_output,
+            tool_execution_started_cb=tool_execution_started_cb,
+            tool_execution_completed_cb=tool_execution_completed_cb,
         ),
         name="execute_tools_task",
     )
@@ -394,12 +446,18 @@ async def _execute_tools_task(
     tool_ctx: ToolContext,
     tool_choice: NotGivenOr[llm.ToolChoice],
     function_stream: AsyncIterable[llm.FunctionCall],
+    tool_execution_started_cb: Callable[[llm.FunctionCall], Any],
+    tool_execution_completed_cb: Callable[[ToolExecutionOutput], Any],
     tool_output: _ToolOutput,
 ) -> None:
     """execute tools, when cancelled, stop executing new tools but wait for the pending ones"""
 
     from .agent import _set_activity_task_info
     from .events import RunContext
+
+    def _tool_completed(out: ToolExecutionOutput) -> None:
+        tool_execution_completed_cb(out)
+        tool_output.output.append(out)
 
     tasks: list[asyncio.Task[Any]] = []
     try:
@@ -436,7 +494,6 @@ async def _execute_tools_task(
                 )
                 continue
 
-            py_out = _PythonOutput(fnc_call=fnc_call, output=None, exception=None)
             try:
                 json_args = fnc_call.arguments or "{}"
                 fnc_args, fnc_kwargs = llm_utils.prepare_function_arguments(
@@ -458,13 +515,13 @@ async def _execute_tools_task(
                         "speech_id": speech_handle.id,
                     },
                 )
-                py_out.exception = e
-                tool_output.output.append(py_out)
+                _tool_completed(make_tool_output(fnc_call=fnc_call, output=None, exception=e))
                 continue
 
-            if not tool_output.first_tool_fut.done():
-                tool_output.first_tool_fut.set_result(None)
+            if not tool_output.first_tool_started_fut.done():
+                tool_output.first_tool_started_fut.set_result(None)
 
+            tool_execution_started_cb(fnc_call)
             try:
                 from .run_result import _MockToolsContextVar
 
@@ -483,20 +540,42 @@ async def _execute_tools_task(
                         },
                     )
 
-                    async def _run_mock() -> Any:
+                    async def _run_mock(mock: Callable, *fnc_args: Any, **fnc_kwargs: Any) -> Any:
                         sig = inspect.signature(mock)
-                        bound = sig.bind_partial(*fnc_args, **fnc_kwargs)
+
+                        pos_param_names = [
+                            name
+                            for name, param in sig.parameters.items()
+                            if param.kind
+                            in (
+                                inspect.Parameter.POSITIONAL_ONLY,
+                                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                            )
+                        ]
+                        max_positional = len(pos_param_names)
+                        trimmed_args = fnc_args[:max_positional]
+                        kw_param_names = [
+                            name
+                            for name, param in sig.parameters.items()
+                            if param.kind
+                            in (
+                                inspect.Parameter.KEYWORD_ONLY,
+                                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                            )
+                        ]
+                        trimmed_kwargs = {
+                            k: v for k, v in fnc_kwargs.items() if k in kw_param_names
+                        }
+
+                        bound = sig.bind_partial(*trimmed_args, **trimmed_kwargs)
                         bound.apply_defaults()
 
-                        if asyncio.iscoroutinefunction(mock_func):
-                            return await mock_func(*fnc_args, **fnc_kwargs)
+                        if asyncio.iscoroutinefunction(mock):
+                            return await mock(*bound.args, **bound.kwargs)
                         else:
-                            return mock_func(*fnc_args, **fnc_kwargs)
+                            return mock(*bound.args, **bound.kwargs)
 
-                    task = asyncio.create_task(
-                        _run_mock(),
-                        name=f"mock_tool_{fnc_call.name}",
-                    )
+                    function_callable = functools.partial(_run_mock, mock, *fnc_args, **fnc_kwargs)
                 else:
                     logger.debug(
                         "executing tool",
@@ -506,18 +585,46 @@ async def _execute_tools_task(
                             "speech_id": speech_handle.id,
                         },
                     )
-                    task = asyncio.create_task(
-                        function_tool(*fnc_args, **fnc_kwargs),
-                        name=f"function_tool_{fnc_call.name}",
+                    function_callable = functools.partial(function_tool, *fnc_args, **fnc_kwargs)
+
+                @tracer.start_as_current_span("function_tool")
+                async def _traceable_fnc_tool(
+                    function_callable: Callable, fnc_call: llm.FunctionCall
+                ) -> None:
+                    current_span = trace.get_current_span()
+                    current_span.set_attribute(trace_types.ATTR_FUNCTION_TOOL_NAME, fnc_call.name)
+                    current_span.set_attribute(
+                        trace_types.ATTR_FUNCTION_TOOL_ARGS, fnc_call.arguments
                     )
 
-                tasks.append(task)
+                    try:
+                        val = await function_callable()
+                        output = make_tool_output(fnc_call=fnc_call, output=val, exception=None)
+                    except BaseException as e:
+                        logger.exception(
+                            "exception occurred while executing tool",
+                            extra={"function": fnc_call.name, "speech_id": speech_handle.id},
+                        )
+
+                        output = make_tool_output(fnc_call=fnc_call, output=None, exception=e)
+
+                    if fnc_call_out := output.fnc_call_out:
+                        current_span.set_attribute(
+                            trace_types.ATTR_FUNCTION_TOOL_OUTPUT, fnc_call_out.output
+                        )
+                        current_span.set_attribute(
+                            trace_types.ATTR_FUNCTION_TOOL_IS_ERROR, fnc_call_out.is_error
+                        )
+
+                    # TODO(theomonnom): Add the agent handoff inside the current_span
+                    _tool_completed(output)
+
+                task = asyncio.create_task(_traceable_fnc_tool(function_callable, fnc_call))
                 _set_activity_task_info(
-                    task,
-                    speech_handle=speech_handle,
-                    function_call=fnc_call,
-                    inline_task=True,
+                    task, speech_handle=speech_handle, function_call=fnc_call, inline_task=True
                 )
+                tasks.append(task)
+                task.add_done_callback(lambda task: tasks.remove(task))
             except Exception as e:
                 # catching exceptions here because even though the function is asynchronous,
                 # errors such as missing or incompatible arguments can still occur at
@@ -529,55 +636,8 @@ async def _execute_tools_task(
                         "speech_id": speech_handle.id,
                     },
                 )
-                py_out.exception = e
-                tool_output.output.append(py_out)
+                _tool_completed(make_tool_output(fnc_call=fnc_call, output=None, exception=e))
                 continue
-
-            def _log_exceptions(
-                task: asyncio.Task[Any],
-                *,
-                py_out: _PythonOutput,
-                fnc_call: llm.FunctionCall,
-            ) -> None:
-                if task.cancelled():
-                    # 선택 사항: 취소 시 tool_output에 추가할지 여부 결정
-                    # py_out.exception = asyncio.CancelledError()
-                    # tool_output.output.append(py_out)
-                    logger.debug(f"Tool task '{fnc_call.name}' was cancelled.")
-                    return
-
-                if exc := task.exception():
-                    py_out.exception = exc
-                    logger.exception(
-                        f"exception from AI function `{fnc_call.name}`",
-                        extra={
-                            "function": fnc_call.name,
-                            "arguments": fnc_call.arguments,
-                            "speech_id": speech_handle.id,
-                        },
-                    )
-
-                    # MCP 연결 오류 처리 로직 추가
-                    if isinstance(exc, ToolError) and \
-                       "MCP tool" in exc.message and \
-                       "network-related issue" in exc.message:
-                        
-                        logger.warning(f"MCP Connection-like error detected for tool '{fnc_call.name}'. This error will be returned to the user.")
-                else:
-                    # 예외가 없는 경우 (성공)
-                    try:
-                        py_out.output = task.result()
-                        logger.debug(f"Tool '{fnc_call.name}' executed successfully, result: {py_out.output}")
-                    except asyncio.InvalidStateError:
-                        # 아직 result()를 호출할 수 없는 경우 (매우 드문 케이스, 일반적으로 done callback은 task 완료 후 호출됨)
-                        logger.error(f"Task '{fnc_call.name}' for tool in done callback but InvalidStateError on result().")
-                        py_out.exception = RuntimeError("Task finished but result not available") # 임시 예외 설정
-                
-                # 성공했든, (처리 가능한) 예외가 발생했든 tool_output에 추가
-                tool_output.output.append(py_out)
-                # tasks.remove(task) # 이 부분은 원래 콜백 바깥에 있었을 가능성이 높음
-
-            task.add_done_callback(partial(_log_exceptions, py_out=py_out, fnc_call=fnc_call))
 
         await asyncio.shield(asyncio.gather(*tasks, return_exceptions=True))
 
@@ -591,13 +651,6 @@ async def _execute_tools_task(
                     "speech_id": speech_handle.id,
                 },
             )
-            debug.Tracing.log_event(
-                "waiting for function call to finish before fully cancelling",
-                {
-                    "functions": names,
-                    "speech_id": speech_handle.id,
-                },
-            )
             await asyncio.gather(*tasks)
     finally:
         await utils.aio.cancel_and_wait(*tasks)
@@ -606,10 +659,6 @@ async def _execute_tools_task(
             logger.debug(
                 "tools execution completed",
                 extra={"speech_id": speech_handle.id},
-            )
-            debug.Tracing.log_event(
-                "tools execution completed",
-                {"speech_id": speech_handle.id},
             )
 
 
@@ -634,10 +683,12 @@ def _is_valid_function_output(value: Any) -> bool:
 
 
 @dataclass
-class _SanitizedOutput:
+class ToolExecutionOutput:
     fnc_call: llm.FunctionCall
     fnc_call_out: llm.FunctionCallOutput | None
     agent_task: Agent | None
+    raw_output: Any
+    raw_exception: BaseException | None
     reply_required: bool = field(default=True)
 
 
@@ -649,7 +700,10 @@ class _PythonOutput:
 
     def sanitize(self) -> _SanitizedOutput:
         from .agent import Agent
-        logger.debug(f"Sanitizing _PythonOutput for tool '{self.fnc_call.name}'. Output: {self.output}, Exception: {self.exception}")
+
+        logger.debug(
+            f"Sanitizing _PythonOutput for tool '{self.fnc_call.name}'. Output: {self.output}, Exception: {self.exception}"
+        )
 
         if isinstance(self.exception, ToolError):
             sanitized_output = _SanitizedOutput(
@@ -736,6 +790,7 @@ class _PythonOutput:
                     "output": self.output,
                 },
             )
+
             return _SanitizedOutput(
                 fnc_call=self.fnc_call.model_copy(),
                 fnc_call_out=None,
@@ -757,6 +812,128 @@ class _PythonOutput:
         )
         logger.debug(f"Sanitized output (Success): {sanitized_output.fnc_call_out}")
         return sanitized_output
+
+
+def make_tool_output(
+    *, fnc_call: llm.FunctionCall, output: Any, exception: BaseException | None
+) -> ToolExecutionOutput:
+    from .agent import Agent
+
+    # support returning Exception instead of raising them (for devex purposes inside evals)
+    if isinstance(output, BaseException):
+        exception = output
+        output = None
+
+    if isinstance(exception, ToolError):
+        return ToolExecutionOutput(
+            fnc_call=fnc_call.model_copy(),
+            fnc_call_out=llm.FunctionCallOutput(
+                name=fnc_call.name,
+                call_id=fnc_call.call_id,
+                output=exception.message,
+                is_error=True,
+            ),
+            agent_task=None,
+            raw_output=output,
+            raw_exception=exception,
+        )
+
+    if isinstance(exception, StopResponse):
+        return ToolExecutionOutput(
+            fnc_call=fnc_call.model_copy(),
+            fnc_call_out=None,
+            agent_task=None,
+            raw_output=output,
+            raw_exception=exception,
+        )
+
+    if exception is not None:
+        return ToolExecutionOutput(
+            fnc_call=fnc_call.model_copy(),
+            fnc_call_out=llm.FunctionCallOutput(
+                name=fnc_call.name,
+                call_id=fnc_call.call_id,
+                output="An internal error occurred",  # Don't send the actual error message, as it may contain sensitive information  # noqa: E501
+                is_error=True,
+            ),
+            agent_task=None,
+            raw_output=output,
+            raw_exception=exception,
+        )
+
+    task: Agent | None = None
+    fnc_out: Any = output
+    if (
+        isinstance(output, list)
+        or isinstance(output, set)
+        or isinstance(output, frozenset)
+        or isinstance(output, tuple)
+    ):
+        agent_tasks = [item for item in output if isinstance(item, Agent)]
+        other_outputs = [item for item in output if not isinstance(item, Agent)]
+        if len(agent_tasks) > 1:
+            logger.error(
+                f"AI function `{fnc_call.name}` returned multiple AgentTask instances, ignoring the output",  # noqa: E501
+                extra={
+                    "call_id": fnc_call.call_id,
+                    "output": output,
+                },
+            )
+
+            return ToolExecutionOutput(
+                fnc_call=fnc_call.model_copy(),
+                fnc_call_out=None,
+                agent_task=None,
+                raw_output=output,
+                raw_exception=exception,
+            )
+
+        task = next(iter(agent_tasks), None)
+
+        # fmt: off
+        fnc_out = (
+            other_outputs if task is None
+            else None if not other_outputs
+            else other_outputs[0] if len(other_outputs) == 1
+            else other_outputs
+        )
+        # fmt: on
+
+    elif isinstance(fnc_out, Agent):
+        task = fnc_out
+        fnc_out = None
+
+    if not _is_valid_function_output(fnc_out):
+        logger.error(
+            f"AI function `{fnc_call.name}` returned an invalid output",
+            extra={
+                "call_id": fnc_call.call_id,
+                "output": output,
+            },
+        )
+        return ToolExecutionOutput(
+            fnc_call=fnc_call.model_copy(),
+            fnc_call_out=None,
+            agent_task=None,
+            raw_output=output,
+            raw_exception=exception,
+        )
+
+    return ToolExecutionOutput(
+        fnc_call=fnc_call.model_copy(),
+        fnc_call_out=(
+            llm.FunctionCallOutput(
+                name=fnc_call.name,
+                call_id=fnc_call.call_id,
+                output=str(fnc_out or ""),  # take the string representation of the output
+                is_error=False,
+            )
+        ),
+        reply_required=fnc_out is not None,  # require a reply if the tool returned an output
+        agent_task=task,
+        raw_output=output,
+        raw_exception=exception,
+    )
 
 
 INSTRUCTIONS_MESSAGE_ID = "lk.agent_task.instructions"  #  value must not change
@@ -830,6 +1007,7 @@ def truncate_message(*, message: str, played_duration: float) -> str:
 @dataclass
 class _AnimationOutput:
     """애니메이션 데이터 출력 클래스"""
+
     animation: list[stf.AnimationData]
     first_frame_fut: asyncio.Future
 
@@ -841,11 +1019,11 @@ def perform_animation_forwarding(
 ) -> tuple[asyncio.Task, _AnimationOutput]:
     """
     STF에서 생성된 애니메이션 데이터를 출력으로 전달합니다.
-    
+
     Args:
         animation_output: 애니메이션 데이터 출력 싱크
         stf_output: STF 추론에서 생성된 애니메이션 데이터 스트림
-    
+
     Returns:
         asyncio.Task: 애니메이션 데이터 전달 태스크
         _AnimationOutput: 애니메이션 출력 데이터
@@ -864,7 +1042,7 @@ async def _animation_forwarding_task(
     """
     STF에서 생성된 애니메이션 데이터를 애니메이션 출력으로 전달하는
     작업을 수행합니다.
-    
+
     Args:
         animation_output: 애니메이션 데이터 출력 싱크
         stf_output: STF 추론에서 생성된 애니메이션 데이터 스트림
@@ -873,23 +1051,23 @@ async def _animation_forwarding_task(
     frames_count = 0
     start_time = time.time()
     # logger.info("애니메이션 데이터 전달 작업 시작")
-    
+
     try:
         async for anim_data in stf_output:
             out.animation.append(anim_data)
             await animation_output.capture_frame(anim_data)
             # 1/60초 만큼 sleep
-            await asyncio.sleep(1/200)
+            await asyncio.sleep(1 / 200)
             frames_count += 1
-            
+
             # if frames_count == 1:
             #     logger.info("첫 번째 애니메이션 프레임 전송 완료")
-            
+
             # if frames_count % 120 == 0:  # 120 프레임마다 로그 (약 2초 분량)
             #     elapsed = time.time() - start_time
             #     fps = frames_count / elapsed if elapsed > 0 else 0
             #     logger.debug(f"애니메이션 데이터 전송 중: {frames_count}개 프레임, FPS: {fps:.1f}")
-            
+
             if not out.first_frame_fut.done():
                 out.first_frame_fut.set_result(None)
                 # logger.debug("첫 번째 애니메이션 프레임 전송 알림 완료")
@@ -899,9 +1077,8 @@ async def _animation_forwarding_task(
     finally:
         if isinstance(stf_output, _ACloseable):
             await stf_output.aclose()
-        
+
         duration = time.time() - start_time
         fps = frames_count / duration if duration > 0 else 0
         # logger.info(f"애니메이션 데이터 전송 완료: {frames_count}개 프레임, 소요 시간: {duration:.2f}초, 평균 FPS: {fps:.1f}")
         animation_output.flush()
-

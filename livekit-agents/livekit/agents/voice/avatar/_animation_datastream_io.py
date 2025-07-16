@@ -15,6 +15,7 @@ from ..io import AnimationDataOutput
 
 # TYPE_CHECKING 임포트 추가
 from typing import TYPE_CHECKING
+
 if TYPE_CHECKING:
     from ...stf import AnimationData
 
@@ -46,7 +47,7 @@ class ByteStreamAnimationOutput(AnimationDataOutput):
 
     async def capture_frame(self, data: "AnimationData") -> None:
         """애니메이션 프레임을 캡처하고 대상에게 스트리밍합니다."""
-        
+
         if not self._stream_writer:
             self._stream_writer = await self._room.local_participant.stream_bytes(
                 name=utils.shortuuid("ANIMATION_"),
@@ -58,16 +59,16 @@ class ByteStreamAnimationOutput(AnimationDataOutput):
                 },
             )
             self._frame_index = 0
-        
+
         # 프레임 헤더 생성 (프레임 인덱스, 특성 수, 타임스탬프)
         header = struct.pack(
-            ANIMATION_DATA_HEADER_FORMAT, 
-            self._frame_index, 
-            data.num_features, 
+            ANIMATION_DATA_HEADER_FORMAT,
+            self._frame_index,
+            data.num_features,
             data.timestamp_us,
-            data.segment_id
+            data.segment_id,
         )
-        
+
         # 헤더와 데이터를 함께 전송
         await self._stream_writer.write(header + data.data)
         self._frame_index += 1
@@ -106,7 +107,7 @@ class ByteStreamAnimationOutput(AnimationDataOutput):
         if self._stream_writer:
             await self._stream_writer.aclose()
             self._stream_writer = None
-        
+
         # 모든 대기 중인 작업 취소
         await utils.aio.cancel_and_wait(*self._tasks)
-        self._tasks.clear() 
+        self._tasks.clear()
