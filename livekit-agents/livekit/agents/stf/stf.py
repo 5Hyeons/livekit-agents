@@ -4,7 +4,7 @@ import asyncio
 import logging
 import weakref
 from collections.abc import AsyncIterable, AsyncIterator
-from typing import Protocol, Optional
+from typing import Protocol, Optional, runtime_checkable
 
 import tritonclient.http as httpclient
 import librosa
@@ -16,12 +16,16 @@ import uuid
 
 from ..log import logger
 from ..utils import aio, http_context
+from ..metrics.base import STFMetrics
+from .. import utils
+from livekit import rtc
 from .animation_data import AnimationData   
 
 # Default URL for the STF server
 DEFAULT_STF_SERVER_URL = "http://localhost:8015/stf"
 
 
+@runtime_checkable
 class STF(Protocol):
     """Abstract base class for Speech-To-Face implementations using Triton."""
 
@@ -277,7 +281,8 @@ class STFStream:
             logger.debug("STF 스트림 aclose 호출")
             self.flush()
             self._is_closed = True
-            await aio.cancel_and_wait(self._task)
+            if self._task is not None:
+                await aio.cancel_and_wait(self._task)
 
 
 
@@ -337,6 +342,10 @@ class STFTritonStream:
 
     async def _send_triton_inference_request(self, audio_data: np.ndarray) -> Optional[np.ndarray]:
         """Send inference request to Triton server."""
+        start_time = time.time()
+        audio_duration = len(audio_data) / 16000.0  # Assuming 16kHz sample rate
+        request_id = str(uuid.uuid4())
+        
         try:
             # Prepare audio input (1차원 float32 배열)
             audio_input = audio_data.astype(np.float32)
@@ -357,12 +366,39 @@ class STFTritonStream:
             
             # Get output - shape is (1, num_frames, 52)
             output = response.as_numpy("anim_output")
-            # logger.debug(f"Triton server response shape: {output.shape}")
+            duration = time.time() - start_time
+            frames_generated = output.shape[1] if output is not None and output.size > 0 else 0
+            
+            # Emit STF metrics
+            if hasattr(self._stf, '_emit_metrics'):
+                metrics = STFMetrics(
+                    label=f"{self._stf._model_name}_triton",
+                    request_id=request_id,
+                    timestamp=time.time(),
+                    duration=duration,
+                    audio_duration=audio_duration,
+                    frames_generated=frames_generated,
+                )
+                self._stf._emit_metrics(metrics)
             
             return output
             
         except Exception as e:
             logger.error(f"Error during Triton inference request: {e}", exc_info=True)
+            duration = time.time() - start_time
+            
+            # Emit failed metrics
+            if hasattr(self._stf, '_emit_metrics'):
+                metrics = STFMetrics(
+                    label=f"{self._stf._model_name}_triton",
+                    request_id=request_id,
+                    timestamp=time.time(),
+                    duration=duration,
+                    audio_duration=audio_duration,
+                    frames_generated=0,
+                )
+                self._stf._emit_metrics(metrics)
+                
             return None
 
     async def _process_frames(self) -> None:
@@ -487,7 +523,8 @@ class STFTritonStream:
             # logger.debug("STF Triton 스트림 aclose 호출")
             self.flush()
             self._is_closed = True
-            await aio.cancel_and_wait(self._task)
+            if self._task is not None:
+                await aio.cancel_and_wait(self._task)
 
     async def __aenter__(self) -> "STFTritonStream":
         """Enter asynchronous context."""
@@ -509,11 +546,23 @@ class STFTritonStreamPair:
         self._output_queue = asyncio.Queue[Optional[tuple[np.ndarray, np.ndarray, int, int]]]()  # (animation, audio_samples, sample_rate, channels)
         self._last_frame_time = 0.0
         self._chunk_duration_sec = chunk_duration_sec
+        
+        # TTS SynthesizeStream 패턴 적용 - 직접 메트릭스 측정
+        self._started_time: float = 0
+        self._request_id: str = ""
+        self._first_output_recorded: bool = False
+        self._ttff: float = 0.0
 
     def push_frame(self, frame: rtc.AudioFrame) -> None:
         """Add audio frame to the STF processing queue."""
         if self._is_closed:
             raise RuntimeError("STFTritonStreamPair is closed")
+        
+        # TTS SynthesizeStream 패턴: 첫 프레임에서 메트릭스 추적 시작
+        if self._started_time == 0:
+            self._started_time = time.perf_counter()
+            self._request_id = str(uuid.uuid4())
+        
         self._audio_queue.put_nowait(frame)
 
     def end_input(self) -> None:
@@ -524,9 +573,14 @@ class STFTritonStreamPair:
         while not self._audio_queue.empty():
             self._audio_queue.get_nowait()
         self.end_input()
+    
 
     async def _send_triton_inference_request(self, audio_data: np.ndarray) -> Optional[np.ndarray]:
         """Send inference request to Triton server with resampled audio."""
+        # start_time = time.time()  # 스트리밍 메트릭스에서 처리하므로 불필요
+        # audio_duration = len(audio_data) / (self._original_sample_rate or 16000)  # 불필요
+        # request_id = str(uuid.uuid4())  # 불필요
+        
         try:
             # 여기서 int16 -> float32 변환 및 16kHz로 리샘플링
             if audio_data.dtype == np.int16:
@@ -534,7 +588,7 @@ class STFTritonStreamPair:
             else:
                 audio_float = audio_data
                 
-            resampled_audio = librosa.resample(audio_float, orig_sr=self._original_sample_rate, target_sr=16000)
+            resampled_audio = librosa.resample(audio_float, orig_sr=self._original_sample_rate or 16000, target_sr=16000)
             
             # Prepare audio input (1차원 float32 배열)
             audio_input = resampled_audio.astype(np.float32)
@@ -555,12 +609,25 @@ class STFTritonStreamPair:
             
             # Get output - shape is (1, num_frames, 52)
             output = response.as_numpy("anim_output")
-            # logger.debug(f"Triton server response shape: {output.shape}")
+            # duration = time.time() - start_time  # 개별 메트릭스 제거 - 스트리밍 메트릭스에서 처리
+            # frames_generated = output.shape[1] if output is not None and output.size > 0 else 0
+            
+            # 개별 메트릭스 emit 제거 - 스트리밍 메트릭스 모니터링에서 통합 처리
+            # if hasattr(self._stf, '_emit_metrics'):
+            #     metrics = STFMetrics(...)
+            #     self._stf._emit_metrics(metrics)
             
             return output
             
         except Exception as e:
             logger.error(f"Error during Triton inference request: {e}", exc_info=True)
+            # duration = time.time() - start_time  # 개별 메트릭스 제거
+            
+            # 실패한 경우도 스트리밍 메트릭스 모니터링에서 처리
+            # if hasattr(self._stf, '_emit_metrics'):
+            #     metrics = STFMetrics(...)
+            #     self._stf._emit_metrics(metrics)
+                
             return None
 
     async def _process_frames(self) -> None:
@@ -624,17 +691,23 @@ class STFTritonStreamPair:
                             # 오디오 청크 추출 (int16 numpy 배열로 전달)
                             audio_chunk_samples = audio_to_process[start_sample:end_sample]
                             
+                            # 첫 번째 출력에서 TTFF 기록 (TTS 패턴 적용)
+                            if not self._first_output_recorded and self._started_time > 0:
+                                self._ttff = time.perf_counter() - self._started_time
+                                self._first_output_recorded = True
+                                logger.debug(f"STF 첫 프레임 생성: TTFF={self._ttff*1000:.0f}ms")
+                            
                             await self._output_queue.put((
                                 blendshape_frame,
                                 audio_chunk_samples,
-                                self._original_sample_rate,
+                                self._original_sample_rate or 16000,
                                 frame.num_channels
                             ))
                             animations_generated += 1
 
             # Process any remaining audio in the buffer after input ends
             if len(audio_buffer) > 0:
-                buffer_duration = len(audio_buffer) / self._original_sample_rate
+                buffer_duration = len(audio_buffer) / (self._original_sample_rate or 16000)
                 # logger.debug(f"남은 오디오 처리: {buffer_duration:.2f}초 ({len(audio_buffer)} 샘플)")
 
                 animation_output = await self._send_triton_inference_request(audio_buffer)
@@ -652,10 +725,16 @@ class STFTritonStreamPair:
                         
                         audio_chunk_samples = audio_buffer[start_sample:end_sample]
                         
+                        # 첫 번째 출력에서 TTFF 기록 (마지막 청크에서도 확인)
+                        if not self._first_output_recorded and self._started_time > 0:
+                            self._ttff = time.perf_counter() - self._started_time
+                            self._first_output_recorded = True
+                            logger.debug(f"STF 첫 프레임 생성 (마지막 청크): TTFF={self._ttff*1000:.0f}ms")
+                        
                         await self._output_queue.put((
                             blendshape_frame,
                             audio_chunk_samples,
-                            self._original_sample_rate,
+                            self._original_sample_rate or 16000,
                             1  # 기본값으로 모노 가정
                         ))
                         animations_generated += 1
@@ -664,10 +743,24 @@ class STFTritonStreamPair:
             logger.error(f"STF Triton Pair 프레임 처리 중 오류 발생: {e}", exc_info=True)
         finally:
             duration = time.time() - start_time
-            # logger.info(
-            #     f"STF Triton Pair 프레임 처리 완료: {frames_processed}개 오디오 프레임 처리, "
-            #     f"{animations_generated}개 애니메이션 생성, 총 소요 시간: {duration:.2f}초"
-            # )
+            
+            # 메트릭스 emit (TTS 패턴 적용)
+            if self._started_time > 0 and self._first_output_recorded:
+                total_duration = time.perf_counter() - self._started_time
+                
+                if hasattr(self._stf, '_emit_metrics'):
+                    metrics = STFMetrics(
+                        label=f"{self._stf._model_name}_triton_streaming",
+                        request_id=self._request_id,
+                        timestamp=time.time(),
+                        duration=total_duration,
+                        ttff=self._ttff,
+                        frames_generated=animations_generated,
+                        audio_duration=duration,  # 실제 처리된 오디오 시간
+                    )
+                    self._stf._emit_metrics(metrics)
+                    logger.debug(f"STF 메트릭스 emit 완료: TTFF={self._ttff*1000:.0f}ms")
+            
             # Use None as the end marker
             await self._output_queue.put(None)
 
@@ -716,7 +809,10 @@ class STFTritonStreamPair:
             # logger.debug("STF Triton Pair 스트림 aclose 호출")
             self.flush()
             self._is_closed = True
-            await aio.cancel_and_wait(self._task)
+            
+            # STF 처리 작업 정리
+            if self._task is not None:
+                await aio.cancel_and_wait(self._task)
 
     async def __aenter__(self) -> "STFTritonStreamPair":
         """Enter asynchronous context."""
@@ -825,7 +921,7 @@ class FaceAnimatorSTF(STF):
             stream.end_input()
 
 
-class FaceAnimatorSTFTriton(STF):
+class FaceAnimatorSTFTriton(STF, rtc.EventEmitter):
     """Implementation using Triton Inference Server."""
 
     def __init__(
@@ -838,6 +934,7 @@ class FaceAnimatorSTFTriton(STF):
         num_features: int = 52,
         chunk_duration_sec: float = 1.0,
     ) -> None:
+        rtc.EventEmitter.__init__(self)
         self._triton_url = triton_url
         self._model_name = model_name
         self._sample_rate = sample_rate
@@ -852,6 +949,10 @@ class FaceAnimatorSTFTriton(STF):
         self._streams = weakref.WeakSet[STFTritonStreamPair]()
 
         logger.info(f"Initialized FaceAnimatorSTFTriton client for server: {triton_url}, model: {model_name}")
+
+    def _emit_metrics(self, metrics: STFMetrics) -> None:
+        """Emit STF metrics to event listeners."""
+        self.emit("metrics_collected", metrics)
 
     async def aclose(self) -> None:
         """Close the FaceAnimatorSTFTriton client and associated streams."""

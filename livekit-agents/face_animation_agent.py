@@ -46,8 +46,12 @@ from language_loader import (
     get_rpc_message
 )
 
+# 오디오 로깅 유틸리티 임포트
+from livekit.agents.voice.audio_logger import log_audio_frame_info
+
 load_dotenv()  # .env 파일에서 환경 변수 로드
 logger = logging.getLogger("face-animation-agent")
+
 
 def get_language_name(language_code: str) -> str:
     """언어 코드를 언어 이름으로 변환 (지원 언어: 한국어/영어/일본어/중국어)"""
@@ -81,22 +85,12 @@ class FaceAgent(Agent):
         # 언어별 대화 시작 메시지 로드
         self.conversation_starters = get_conversation_starters(self.user_language)
         
-        # 성능 메트릭스 수집을 위한 변수
-        self.metrics_data = {
-            "stt_total_duration": 0.0,
-            "llm_total_duration": 0.0,
-            "tts_total_duration": 0.0,
-            "stf_total_duration": 0.0,  # STF 모델 레이턴시 측정 추가
-            "stt_count": 0,
-            "llm_count": 0,
-            "tts_count": 0,
-            "stf_count": 0,
-            "session_start_time": time.time(),
-            "end_to_end_durations": []  # 전체 응답 시간 측정용
-        }
-        
-        # End-to-end 레이턴시 측정을 위한 변수
-        self.current_request_start_time = None
+        # 반응성 메트릭스 추적 (스트리밍 기반)
+        import sys
+        import os
+        sys.path.append(os.path.dirname(__file__))
+        from streaming_reactivity_tracker import StreamingReactivityTracker
+        self.reactivity_tracker = StreamingReactivityTracker()
         
         # 이전 대화 컨텍스트 가져오기
         context = self.db.get_recent_context(user_data.participant_id, message_count=120)
@@ -108,12 +102,10 @@ class FaceAgent(Agent):
             context
         )
             
-        # STT 언어 설정 (사용자 언어에 맞춤)
-        deepgram_language = map_language_to_deepgram(self.user_language)
-        
         super().__init__(
             instructions=base_instructions,
-            stt=deepgram.STT(model="nova-2-general", language=deepgram_language),
+            stt=deepgram.STT(model="nova-2-general", language=self.user_language),
+            # stt=openai.STT(model="gpt-4o-transcribe", language=self.user_language),
             llm=openai.LLM(model="gpt-4o"),
             tts=elevenlabs.TTS(
                     voice_id="tZarJVdIxWQ9lIXIV9qg",
@@ -124,9 +116,9 @@ class FaceAgent(Agent):
                         style=0.0,
                         speed=1.0,
                     ),
-                    encoding="mp3_22050_32",
+                    encoding="mp3_44100_32",
                 ),
-            stf=FaceAnimatorSTFTriton(chunk_duration_sec=1.0),
+            stf=FaceAnimatorSTFTriton(chunk_duration_sec=0.5),
             # turn_detection=MultilingualModel(),
         )
 
@@ -191,126 +183,24 @@ class FaceAgent(Agent):
                 logger.error(f"대화 시작 중 오류 발생: {e}")
     
     def _update_metrics_data(self, metrics_obj):
-        """메트릭스 데이터 업데이트"""
-        if isinstance(metrics_obj, metrics.STTMetrics):
-                self.metrics_data["stt_total_duration"] += metrics_obj.duration
-                self.metrics_data["stt_count"] += 1
-                
-                # logger.debug(f"STT 메트릭스 - 지속시간: {metrics_obj.duration:.3f}초, 오디오 지속시간: {metrics_obj.audio_duration:.3f}초")
-                
-                # End-to-end 레이턴시 측정 시작 (사용자 입력 시작점)
-                if self.current_request_start_time is None:
-                    self.current_request_start_time = time.time()
-            
-        elif isinstance(metrics_obj, metrics.LLMMetrics):
-            self.metrics_data["llm_total_duration"] += metrics_obj.duration
-            self.metrics_data["llm_count"] += 1
-            logger.debug(f"LLM 메트릭스 - 지속시간: {metrics_obj.duration:.3f}초, TTFT: {metrics_obj.ttft:.3f}초, 토큰/초: {metrics_obj.tokens_per_second:.1f}")
-            
-        elif isinstance(metrics_obj, metrics.TTSMetrics):
-            self.metrics_data["tts_total_duration"] += metrics_obj.duration
-            self.metrics_data["tts_count"] += 1
-            logger.debug(f"TTS 메트릭스 - 지속시간: {metrics_obj.duration:.3f}초, TTFB: {metrics_obj.ttfb:.3f}초, 문자 수: {metrics_obj.characters_count}")
-            
-            # End-to-end 레이턴시 측정 종료 (응답 완료 시점)
-            if self.current_request_start_time is not None:
-                end_to_end_duration = time.time() - self.current_request_start_time
-                self.metrics_data["end_to_end_durations"].append(end_to_end_duration)
-                logger.debug(f"End-to-end 레이턴시: {end_to_end_duration:.3f}초")
-                self.current_request_start_time = None
-            
-        # elif isinstance(metrics_obj, metrics.VADMetrics):
-        #     logger.debug(f"VAD 메트릭스 - 추론 지속시간: {metrics_obj.inference_duration_total:.3f}초, 추론 횟수: {metrics_obj.inference_count}")
-            
-        # STF 모델 레이턴시 측정 (임시 구현 - 실제 STF 메트릭스가 없으므로 TTS 완료 시점에 추정)
-        if isinstance(metrics_obj, metrics.TTSMetrics):
-            # STF 처리 시간 추정 (실제로는 별도 메트릭스 필요)
-            estimated_stf_duration = metrics_obj.audio_duration * 0.1  # 대략적인 STF 처리 시간
-            self.metrics_data["stf_total_duration"] += estimated_stf_duration
-            self.metrics_data["stf_count"] += 1
-            logger.debug(f"STF 메트릭스 (추정) - 지속시간: {estimated_stf_duration:.3f}초")
+        """반응성 메트릭스 업데이트 - 스트리밍 기반 추적"""
+        # 모든 메트릭스 객체를 StreamingReactivityTracker에 전달
+        # 스트리밍 파이프라인에 최적화된 TTFT/TTFB 측정
+        self.reactivity_tracker.record_metrics(metrics_obj)
     
     def _log_performance_summary(self):
-        """성능 요약 로깅"""
-        session_duration = time.time() - self.metrics_data["session_start_time"]
-        
-        # 평균 레이턴시 계산
-        avg_stt_latency = self.metrics_data["stt_total_duration"] / max(1, self.metrics_data["stt_count"])
-        avg_llm_latency = self.metrics_data["llm_total_duration"] / max(1, self.metrics_data["llm_count"])
-        avg_tts_latency = self.metrics_data["tts_total_duration"] / max(1, self.metrics_data["tts_count"])
-        avg_stf_latency = self.metrics_data["stf_total_duration"] / max(1, self.metrics_data["stf_count"])
-        
-        # End-to-end 레이턴시 통계 계산
-        end_to_end_durations = self.metrics_data["end_to_end_durations"]
-        avg_end_to_end = sum(end_to_end_durations) / max(1, len(end_to_end_durations))
-        max_end_to_end = max(end_to_end_durations) if end_to_end_durations else 0
-        min_end_to_end = min(end_to_end_durations) if end_to_end_durations else 0
-        
-        performance_summary = {
-            "session_duration": f"{session_duration:.1f}초",
-            "stt_metrics": {
-                "requests": self.metrics_data["stt_count"],
-                "total_duration": f"{self.metrics_data['stt_total_duration']:.3f}초",
-                "avg_latency": f"{avg_stt_latency:.3f}초"
-            },
-            "llm_metrics": {
-                "requests": self.metrics_data["llm_count"],
-                "total_duration": f"{self.metrics_data['llm_total_duration']:.3f}초",
-                "avg_latency": f"{avg_llm_latency:.3f}초"
-            },
-            "tts_metrics": {
-                "requests": self.metrics_data["tts_count"],
-                "total_duration": f"{self.metrics_data['tts_total_duration']:.3f}초",
-                "avg_latency": f"{avg_tts_latency:.3f}초"
-            },
-            "stf_metrics": {
-                "requests": self.metrics_data["stf_count"],
-                "total_duration": f"{self.metrics_data['stf_total_duration']:.3f}초",
-                "avg_latency": f"{avg_stf_latency:.3f}초"
-            },
-            "end_to_end_metrics": {
-                "total_requests": len(end_to_end_durations),
-                "avg_latency": f"{avg_end_to_end:.3f}초",
-                "min_latency": f"{min_end_to_end:.3f}초",
-                "max_latency": f"{max_end_to_end:.3f}초"
-            }
-        }
-        
-        logger.info(f"성능 요약: {performance_summary}")
+        """반응성 요약 로깅 (세션 종료 시)"""
+        current_metrics = self.reactivity_tracker.get_current_metrics()
+        if any(v is not None for v in current_metrics.values()):
+            logger.info(f"Final reactivity metrics: {current_metrics}")
     
     def get_performance_stats(self) -> Dict[str, Any]:
-        """현재 성능 통계 반환"""
-        session_duration = time.time() - self.metrics_data["session_start_time"]
-        
-        # 평균 레이턴시 계산
-        avg_stt_latency = self.metrics_data["stt_total_duration"] / max(1, self.metrics_data["stt_count"])
-        avg_llm_latency = self.metrics_data["llm_total_duration"] / max(1, self.metrics_data["llm_count"])
-        avg_tts_latency = self.metrics_data["tts_total_duration"] / max(1, self.metrics_data["tts_count"])
-        avg_stf_latency = self.metrics_data["stf_total_duration"] / max(1, self.metrics_data["stf_count"])
-        
-        # End-to-end 레이턴시 통계
-        end_to_end_durations = self.metrics_data["end_to_end_durations"]
-        avg_end_to_end = sum(end_to_end_durations) / max(1, len(end_to_end_durations))
-        
-        return {
-            "session_duration": session_duration,
-            "stt_avg_latency": avg_stt_latency,
-            "llm_avg_latency": avg_llm_latency,
-            "tts_avg_latency": avg_tts_latency,
-            "stf_avg_latency": avg_stf_latency,
-            "end_to_end_avg_latency": avg_end_to_end,
-            "total_requests": {
-                "stt": self.metrics_data["stt_count"],
-                "llm": self.metrics_data["llm_count"],
-                "tts": self.metrics_data["tts_count"],
-                "stf": self.metrics_data["stf_count"],
-                "end_to_end": len(end_to_end_durations)
-            }
-        }
+        """현재 반응성 통계 반환"""
+        return self.reactivity_tracker.get_current_metrics()
 
 def prewarm(proc: JobProcess):
     # VAD 모델 로드
-    proc.userdata["vad"] = silero.VAD.load()
+    proc.userdata["vad"] = silero.VAD.load(activation_threshold=0.2)
     # 데이터베이스는 각 사용자별로 개별 생성하므로 prewarm에서 제거
 
 async def entrypoint(ctx: JobContext):
@@ -365,6 +255,15 @@ async def entrypoint(ctx: JobContext):
     
     # 메트릭스 수집을 위한 UsageCollector 생성
     usage_collector = metrics.UsageCollector()
+    
+    # Agent 상태 변화 추적을 위한 이벤트 리스너
+    @session.on("agent_state_changed")
+    def on_agent_state_changed(ev):
+        """에이전트 상태 변경 이벤트 핸들러 - speaking 시작 감지"""
+        if ev.new_state == "speaking":
+            # 에이전트가 말하기 시작할 때 기록 (올바른 타이밍)
+            agent.reactivity_tracker.record_agent_utterance_start()
+        logger.info(f"에이전트 상태 변경: {ev.old_state} -> {ev.new_state}")
 
     room_input_options = RoomInputOptions(
         audio_enabled=True,
@@ -403,11 +302,6 @@ async def entrypoint(ctx: JobContext):
         # 에이전트의 메트릭스 데이터 업데이트
         agent._update_metrics_data(ev.metrics)
         
-        # 실시간 성능 통계 출력 (5개 요청마다)
-        # total_requests = agent.metrics_data["stt_count"] + agent.metrics_data["llm_count"] + agent.metrics_data["tts_count"]
-        # if total_requests > 0 and total_requests % 5 == 0:
-        #     stats = agent.get_performance_stats()
-        #     logger.info(f"실시간 성능 통계 (요청 {total_requests}개): STT평균 {stats['stt_avg_latency']:.3f}초, LLM평균 {stats['llm_avg_latency']:.3f}초, TTS평균 {stats['tts_avg_latency']:.3f}초, STF평균 {stats['stf_avg_latency']:.3f}초, E2E평균 {stats['end_to_end_avg_latency']:.3f}초")
     
     # 세션 시작
     await session.start(
@@ -420,14 +314,12 @@ async def entrypoint(ctx: JobContext):
     # 사용자 상태 변경 이벤트 리스너 등록
     @session.on("user_state_changed")
     def on_user_state_changed(ev):
-        """사용자 상태 변경 이벤트 핸들러"""
+        """사용자 상태 변경 이벤트 핸들러 - 사용자 발화 종료 추적"""
+        if ev.old_state == "speaking" and ev.new_state == "listening":
+            # 사용자가 말을 끝낼 때 - 반응속도 측정 시작점
+            agent.reactivity_tracker.record_user_speech_end()
         logger.info(f"사용자 상태 변경: {ev.old_state} -> {ev.new_state}")
         
-    # 에이전트 상태 변경 이벤트 리스너 등록
-    @session.on("agent_state_changed")
-    def on_agent_state_changed(ev):
-        """에이전트 상태 변경 이벤트 핸들러"""
-        logger.info(f"에이전트 상태 변경: {ev.old_state} -> {ev.new_state}")
     
     # 세션 종료 이벤트 핸들러 - 채팅 기록 저장 및 타이머 정리
     @session.on("close")
@@ -438,11 +330,8 @@ async def entrypoint(ctx: JobContext):
         summary = usage_collector.get_summary()
         logger.info(f"세션 종료 - 최종 사용량 통계: {summary}")
         
-        # 에이전트의 성능 메트릭스 요약 로깅
+        # 에이전트의 반응성 메트릭스 요약 로깅
         agent._log_performance_summary()
-        
-        # 실시간 성능 모니터링 대시보드 구현 완료
-        logger.info("실시간 성능 모니터링 시스템이 활성화되었습니다.")
         # agent.chat_ctx에서 현재 세션의 메시지들 가져오기
         chat_messages = []
         for item in agent.chat_ctx.items:

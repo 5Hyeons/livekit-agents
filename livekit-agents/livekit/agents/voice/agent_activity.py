@@ -17,6 +17,7 @@ from ..metrics import (
     LLMMetrics,
     RealtimeModelMetrics,
     STTMetrics,
+    STFMetrics,
     TTSMetrics,
     VADMetrics,
 )
@@ -348,10 +349,12 @@ class AgentActivity(RecognitionHooks):
                 self.tts.on("error", self._on_error)
                 self.tts.prewarm()
 
-            # if isinstance(self.stf, stf.STF):
-            #     self.stf.on("metrics_collected", self._on_metrics_collected)
-            #     self.stf.on("error", self._on_error)
-            #     self.stf.prewarm()
+            if isinstance(self.stf, stf.STF):
+                # Connect STF metrics if the STF component supports it
+                if hasattr(self.stf, 'on'):
+                    self.stf.on("metrics_collected", self._on_metrics_collected)
+                if hasattr(self.stf, 'prewarm'):
+                    self.stf.prewarm()
 
             if isinstance(self.vad, vad.VAD):
                 self.vad.on("metrics_collected", self._on_metrics_collected)
@@ -548,6 +551,10 @@ class AgentActivity(RecognitionHooks):
                 self.tts.off("metrics_collected", self._on_metrics_collected)
                 self.tts.off("error", self._on_error)
 
+            if isinstance(self.stf, stf.STF):
+                if hasattr(self.stf, 'off'):
+                    self.stf.off("metrics_collected", self._on_metrics_collected)
+
             if isinstance(self.vad, vad.VAD):
                 self.vad.off("metrics_collected", self._on_metrics_collected)
 
@@ -562,12 +569,20 @@ class AgentActivity(RecognitionHooks):
         if not self._started:
             return
 
+        # 오디오 입력 로깅 (audio_logger 사용)
+        try:
+            from .audio_logger import log_audio_frame_info
+            log_audio_frame_info(frame)
+        except Exception as e:
+            logger.debug(f"오디오 로깅 오류: {e}")
+
         if (
             self._current_speech
             and not self._current_speech.allow_interruptions
             and self._session.options.discard_audio_if_uninterruptible
         ):
             # discard the audio if the current speech is not interruptable
+            logger.debug("[오디오입력] 현재 speech가 중단 불가능하여 오디오 폐기")
             return
 
         if self._rt_session is not None:
@@ -854,7 +869,7 @@ class AgentActivity(RecognitionHooks):
 
     def _on_metrics_collected(
         self,
-        ev: STTMetrics | TTSMetrics | VADMetrics | LLMMetrics | RealtimeModelMetrics,
+        ev: STTMetrics | TTSMetrics | VADMetrics | LLMMetrics | RealtimeModelMetrics | STFMetrics,
     ) -> None:
         if (speech_handle := _SpeechHandleContextVar.get(None)) and (
             isinstance(ev, LLMMetrics) or isinstance(ev, TTSMetrics)
@@ -947,6 +962,9 @@ class AgentActivity(RecognitionHooks):
 
     def on_start_of_speech(self, ev: vad.VADEvent) -> None:
         self._session._update_user_state("speaking")
+        # Record VAD detection timing if the agent supports reactivity tracking
+        if hasattr(self._agent, 'reactivity_tracker') and hasattr(self._agent, 'ReactivityStage'):
+            self._agent.reactivity_tracker.record_event(self._agent.ReactivityStage.VAD_DETECTION)
 
     def on_end_of_speech(self, ev: vad.VADEvent) -> None:
         self._session._update_user_state("listening")

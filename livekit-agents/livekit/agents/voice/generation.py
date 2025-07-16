@@ -222,11 +222,11 @@ async def _stf_inference_task(
     """
     frames_count = 0
     start_time = time.time()
-    logger.info("STF 추론 작업 시작")
+    # logger.info("STF 추론 작업 시작")
     
     try:
         # node가 코루틴인 경우 실행
-        logger.debug("STF 노드 실행 중")
+        # logger.debug("STF 노드 실행 중")
         stf_result = node(input, model_settings)
         if asyncio.iscoroutine(stf_result):
             stf_result = await stf_result
@@ -237,7 +237,7 @@ async def _stf_inference_task(
             return
             
         # 각 애니메이션 데이터를 채널로 전달
-        logger.debug("애니메이션 데이터 스트림 처리 시작")
+        # logger.debug("애니메이션 데이터 스트림 처리 시작")
         async for anim_data in stf_result:
             anim_ch.send_nowait(anim_data)
             frames_count += 1
