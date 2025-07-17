@@ -199,8 +199,9 @@ class RoomIO:
 
         if self._output_options.animation_enabled:
             # self._animation_output = self._create_animation_output(self._participant_identity)
+            is_dual_mode = self._audio_output is None
             self._animation_output = _ParticipantAnimationOutput(
-                self._room, participant=self._participant_identity
+                self._room, participant=self._participant_identity, is_dual_mode=is_dual_mode
             )
             logger.info("애니메이션 데이터 출력 활성화됨")
 

@@ -262,6 +262,10 @@ class AnimationDataOutput(ABC):
         """현재 데이터 스트림을 플러시합니다."""
         pass
 
+    @abstractmethod
+    def clear_buffer(self) -> None:
+        """Clear the buffer"""
+
     def on_attached(self) -> None:
         """출력이 연결될 때 호출됩니다."""
         if self._next_in_chain:

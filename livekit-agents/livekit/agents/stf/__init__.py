@@ -1,4 +1,15 @@
-from .stf import STF, FaceAnimatorSTF, FaceAnimatorSTFTriton
+from .stf import (
+    STF, 
+    FaceAnimator,
+    FaceAnimatorStream,
+    OutputMode,
+)
 from .animation_data import AnimationData
 
-__all__ = ["STF", "FaceAnimatorSTF", "FaceAnimatorSTFTriton", "AnimationData"] 
+__all__ = [
+    "STF", 
+    "FaceAnimator",
+    "FaceAnimatorStream", 
+    "OutputMode",
+    "AnimationData",
+] 

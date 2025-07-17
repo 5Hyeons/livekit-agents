@@ -18,6 +18,7 @@ from ...types import (
     ATTRIBUTE_ANIMATION_FINAL,
     ATTRIBUTE_ANIMATION_INTERRUPTED,
     ATTRIBUTE_ANIMATION_SAMPLE_RATE,
+    ATTRIBUTE_ANIMATION_OUTPUT_MODE,
 )
 from .. import io
 
@@ -434,7 +435,6 @@ class _ParticipantTranscriptionOutput(io.TextOutput):
 class _ParticipantAnimationOutput(io.AnimationDataOutput):
     """
     애니메이션 데이터를 브로드캐스트하는 출력 클래스입니다.
-    (수정됨: 스트림을 오랫동안 열어두는 단순화된 버전)
     """
 
     def __init__(
@@ -442,11 +442,13 @@ class _ParticipantAnimationOutput(io.AnimationDataOutput):
         room: rtc.Room,
         *,
         participant: rtc.Participant | str | None = None,
+        is_dual_mode: bool = True,
         is_delta_stream: bool = False,
     ):
         super().__init__(next_in_chain=None)
         self._room, self._is_delta_stream = room, is_delta_stream
         self._participant_identity: str | None = None
+        self._is_dual_mode = is_dual_mode  # 기본값 True
 
         self._close_task: asyncio.Task | None = None  # Task for final close
         self._writer: rtc.ByteStreamWriter | None = None
@@ -494,6 +496,12 @@ class _ParticipantAnimationOutput(io.AnimationDataOutput):
         self._current_id = utils.shortuuid("ANIM_")
         attributes[ATTRIBUTE_ANIMATION_SEGMENT_ID] = self._current_id
         attributes[ATTRIBUTE_ANIMATION_SAMPLE_RATE] = str(self._sample_rate)
+        
+        # dual mode 정보 추가
+        if self._is_dual_mode:
+            attributes[ATTRIBUTE_ANIMATION_OUTPUT_MODE] = "animation_with_audio"
+        else:
+            attributes[ATTRIBUTE_ANIMATION_OUTPUT_MODE] = "animation_only"
 
         return await self._room.local_participant.stream_bytes(
             name=writer_id,

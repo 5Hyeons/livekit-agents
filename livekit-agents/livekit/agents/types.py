@@ -34,6 +34,7 @@ ATTRIBUTE_ANIMATION_SEGMENT_ID = "lk.animation_segment_id"
 ATTRIBUTE_ANIMATION_SAMPLE_RATE = "lk.animation_sample_rate"
 ATTRIBUTE_ANIMATION_FINAL = "lk.animation_final"
 ATTRIBUTE_ANIMATION_INTERRUPTED = "lk.animation_interrupted"
+ATTRIBUTE_ANIMATION_OUTPUT_MODE = "lk.animation_output_mode"
 
 
 _T = TypeVar("_T")

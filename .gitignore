@@ -170,3 +170,5 @@ node_modules
 credentials.json
 pyrightconfig.json
 docs/
+
+livekit-agents/data/

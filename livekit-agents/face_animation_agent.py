@@ -28,7 +28,7 @@ from livekit.plugins import deepgram, openai, silero, elevenlabs
 
 
 # STF 모듈 임포트 및 기본 URL 정의
-from livekit.agents.stf import FaceAnimatorSTFTriton
+from livekit.agents.stf import FaceAnimator, OutputMode
 from livekit.agents.voice.agent import Agent
 from livekit.agents.voice.agent_session import AgentSession
 from livekit.agents.voice.room_io.room_io import RoomInputOptions, RoomOutputOptions
@@ -118,7 +118,7 @@ class FaceAgent(Agent):
                     ),
                     encoding="mp3_44100_32",
                 ),
-            stf=FaceAnimatorSTFTriton(chunk_duration_sec=0.5),
+            stf=FaceAnimator(chunk_duration_sec=0.5, output_mode=OutputMode.ANIMATION_ONLY),
             # turn_detection=MultilingualModel(),
         )
 
@@ -274,10 +274,10 @@ async def entrypoint(ctx: JobContext):
     )
     # RoomIO 옵션 설정 (애니메이션 데이터 출력 활성화)
     room_output_options = RoomOutputOptions(
-        audio_enabled=False,          # 오디오 출력 비활성화 (AnimationData에 포함됨)
-        transcription_enabled=True,   # 텍스트 전사 출력
+        audio_enabled=True,           # 오디오 출력 활성화 (ANIMATION_ONLY 모드 테스트)
+        transcription_enabled=False,   # 텍스트 전사 출력
         # transcription_enabled=False,   # 텍스트 전사 비활성화
-        animation_enabled=True,       # 애니메이션 데이터 출력 활성화
+        animation_enabled=True,        # 애니메이션 데이터 출력 활성화 (ANIMATION_ONLY 모드)
         sync_transcription=False,
     )
 

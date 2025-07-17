@@ -633,6 +633,13 @@ class AgentActivity(RecognitionHooks):
     def push_audio(self, frame: rtc.AudioFrame) -> None:
         if not self._started:
             return
+        
+        # 오디오 입력 로깅 (audio_logger 사용)
+        try:
+            from .audio_logger import log_audio_frame_info
+            log_audio_frame_info(frame)
+        except Exception as e:
+            logger.debug(f"오디오 로깅 오류: {e}")
 
         if (
             self._current_speech
@@ -1366,7 +1373,10 @@ class AgentActivity(RecognitionHooks):
                     tasks.append(forward_anim_task)
                     anim_out.first_frame_fut.add_done_callback(_on_first_frame)
                 # Audio forwarding (when audio output is enabled)
-                elif audio_output is not None:
+                if audio_output is not None and tts_gen_data is not None:
+                    # Log when both audio and animation are enabled
+                    if animation_output is not None:
+                        logger.info("Dual output mode: forwarding both audio and animation separately")
                     forward_task, audio_out = perform_audio_forwarding(
                         audio_output=audio_output, tts_output=tts_gen_data.audio_ch
                     )
@@ -1381,7 +1391,7 @@ class AgentActivity(RecognitionHooks):
                     )
                     tasks.append(forward_task)
                     audio_out.first_frame_fut.add_done_callback(_on_first_frame)
-                elif animation_output is not None:
+                if animation_output is not None:
                     stf_task, stf_gen_data = perform_stf_inference(
                         node=self._agent.stf_node,
                         input=audio,
@@ -1594,7 +1604,7 @@ class AgentActivity(RecognitionHooks):
                 tasks.append(forward_anim_task)
                 anim_out.first_frame_fut.add_done_callback(_on_first_frame)
             # Audio forwarding (when audio output is enabled)
-            elif audio_output is not None:
+            if audio_output is not None:
                 # TODO(theomonnom): should the audio be added to the chat_context too?
                 forward_task, audio_out = perform_audio_forwarding(
                     audio_output=audio_output, tts_output=tts_gen_data.audio_ch
