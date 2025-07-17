@@ -11,6 +11,7 @@ This is the **LiveKit Agents** framework - a Python framework for building realt
 ### Core Framework (`livekit-agents/`)
 - **Agent & AgentSession**: Core agent logic and session management for user interactions
 - **Voice Pipeline**: Complete voice processing chain (STT → LLM → TTS) with VAD integration
+- **Animation Pipeline**: Face animation data generation (STF - Speech-To-Face) with WebRTC streaming
 - **Plugin System**: Modular architecture supporting multiple AI service providers
 - **Job Scheduling**: Built-in task distribution system with dispatch APIs
 - **WebRTC Integration**: Real-time audio/video communication via LiveKit server
@@ -21,6 +22,7 @@ Extensive plugin system with 35+ integrations:
 - **LLM**: OpenAI, Anthropic, Google, AWS Bedrock, Groq, etc.
 - **TTS**: ElevenLabs, OpenAI, Cartesia, Azure, Google, etc.
 - **Avatars**: Tavus, Hedra, Bithuman, Bey for video avatar integration
+- **STF**: FaceAnimator for Speech-To-Face animation generation
 - **Specialized**: Turn detection, VAD (Silero), MCP integration
 
 ### Development Structure
@@ -83,10 +85,29 @@ async def entrypoint(ctx: JobContext):
         stt=provider.STT(),
         llm=provider.LLM(),
         tts=provider.TTS(),
+        stf=FaceAnimator(output_mode=OutputMode.ANIMATION_ONLY),  # Optional for face animation
     )
     
     await session.start(agent=agent, room=ctx.room)
 ```
+
+### Face Animation Agents
+For agents with face animation capabilities:
+```python
+from livekit.agents.stf import FaceAnimator, OutputMode
+
+# Animation-only mode (legacy)
+stf=FaceAnimator(chunk_duration_sec=0.5, output_mode=OutputMode.ANIMATION_ONLY)
+
+# Animation with audio mode (recommended)
+stf=FaceAnimator(chunk_duration_sec=0.5, output_mode=OutputMode.ANIMATION_WITH_AUDIO)
+```
+
+Animation output modes:
+- `ANIMATION_ONLY`: Outputs animation data only (legacy mode)
+- `ANIMATION_WITH_AUDIO`: Outputs both animation and audio data (recommended)
+
+The output mode information is automatically passed to clients via animation stream attributes as `lk.animation_output_mode`.
 
 ### Entry Points
 - Use `cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint))` pattern
@@ -132,12 +153,31 @@ Provider-specific API keys (examples):
 4. Add optional dependency in main `pyproject.toml`
 
 ### Creating Agents
-1. Start from `examples/voice_agents/basic_agent.py`
+1. Start from `examples/voice_agents/basic_agent.py` or `livekit-agents/face_animation_agent.py` for animation
 2. Customize Agent instructions and tools
-3. Select appropriate plugin combinations
-4. Test with `console` mode first, then `dev` mode
+3. Select appropriate plugin combinations (STT, LLM, TTS, STF)
+4. Configure RoomIO options for animation if needed:
+   ```python
+   room_output_options = RoomOutputOptions(
+       audio_enabled=True,
+       animation_enabled=True,  # Enable animation output
+   )
+   ```
+5. Test with `console` mode first, then `dev` mode
 
 ### Plugin Integration
 - Import from `livekit.plugins.provider_name`
+- Import STF from `livekit.agents.stf` for face animation
 - Use consistent initialization patterns across providers
 - Handle API credentials via environment variables
+
+### Animation Stream Attributes
+Animation streams automatically include metadata attributes:
+- `lk.animation_output_mode`: `"animation_only"` or `"animation_with_audio"`
+- `lk.animation_segment_id`: Unique identifier for animation segments
+- `lk.animation_sample_rate`: Audio sample rate for synchronization
+- `lk.animation_final`: Indicates final frame in a segment
+- `lk.animation_interrupted`: Indicates if animation was interrupted
+
+### Dual Mode Detection
+The system automatically detects dual mode (audio + animation simultaneously enabled) and sets appropriate output mode attributes for client consumption.
