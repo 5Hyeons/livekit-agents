@@ -264,6 +264,38 @@ async def entrypoint(ctx: JobContext):
             # 에이전트가 말하기 시작할 때 기록 (올바른 타이밍)
             agent.reactivity_tracker.record_agent_utterance_start()
         logger.info(f"에이전트 상태 변경: {ev.old_state} -> {ev.new_state}")
+        
+        # Client에 agent state 변경 알림 RPC 호출
+        try:
+            import json
+            payload = json.dumps({
+                "old_state": ev.old_state,
+                "new_state": ev.new_state,
+                "timestamp": time.time()
+            })
+            
+            # 비동기 작업을 동기 핸들러에서 실행
+            task = asyncio.create_task(
+                ctx.room.local_participant.perform_rpc(
+                    destination_identity=participant.identity,  # 연결된 참가자에게 전송
+                    method="agent_state_changed",
+                    payload=payload,
+                    response_timeout=1.0  # 1초 타임아웃
+                )
+            )
+            
+            # 태스크 완료 콜백 추가 (에러 로깅용)
+            def handle_rpc_result(future):
+                try:
+                    future.result()
+                    logger.debug(f"Agent state RPC sent successfully: {ev.new_state}")
+                except Exception as e:
+                    logger.warning(f"Failed to send agent state RPC: {e}")
+            
+            task.add_done_callback(handle_rpc_result)
+            
+        except Exception as e:
+            logger.error(f"Error sending agent state RPC: {e}")
 
     room_input_options = RoomInputOptions(
         audio_enabled=True,
