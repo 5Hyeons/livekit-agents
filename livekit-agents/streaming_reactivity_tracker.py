@@ -168,7 +168,7 @@ class StreamingReactivityTracker:
             self.record_llm_metrics(metrics_obj)
         elif isinstance(metrics_obj, metrics.TTSMetrics):
             self.record_tts_metrics(metrics_obj)
-        elif hasattr(metrics, 'STFMetrics') and isinstance(metrics_obj, metrics.STFMetrics):
+        elif isinstance(metrics_obj, metrics.STFMetrics):
             self.record_stf_metrics(metrics_obj)
         # Ignore STT and VAD metrics as they're covered by EOU
     

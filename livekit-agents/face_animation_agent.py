@@ -118,7 +118,7 @@ class FaceAgent(Agent):
                     ),
                     encoding="mp3_44100_32",
                 ),
-            stf=FaceAnimator(chunk_duration_sec=0.5, output_mode=OutputMode.ANIMATION_ONLY),
+            stf=FaceAnimator(chunk_duration_sec=0.5, output_mode=OutputMode.ANIMATION_WITH_AUDIO),
             # turn_detection=MultilingualModel(),
         )
 
@@ -200,7 +200,7 @@ class FaceAgent(Agent):
 
 def prewarm(proc: JobProcess):
     # VAD 모델 로드
-    proc.userdata["vad"] = silero.VAD.load(activation_threshold=0.2)
+    proc.userdata["vad"] = silero.VAD.load(activation_threshold=0.8)
     # 데이터베이스는 각 사용자별로 개별 생성하므로 prewarm에서 제거
 
 async def entrypoint(ctx: JobContext):
@@ -274,7 +274,7 @@ async def entrypoint(ctx: JobContext):
     )
     # RoomIO 옵션 설정 (애니메이션 데이터 출력 활성화)
     room_output_options = RoomOutputOptions(
-        audio_enabled=True,           # 오디오 출력 활성화 (ANIMATION_ONLY 모드 테스트)
+        audio_enabled=False,           # 오디오 출력 활성화 (ANIMATION_ONLY 모드 테스트)
         transcription_enabled=False,   # 텍스트 전사 출력
         # transcription_enabled=False,   # 텍스트 전사 비활성화
         animation_enabled=True,        # 애니메이션 데이터 출력 활성화 (ANIMATION_ONLY 모드)

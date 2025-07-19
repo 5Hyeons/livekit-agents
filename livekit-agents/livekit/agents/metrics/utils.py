@@ -57,13 +57,13 @@ def log_metrics(metrics: AgentMetrics, *, logger: logging.Logger | None = None) 
                 "transcription_delay": round(metrics.transcription_delay, 2),
             },
         )
-    elif isinstance(metrics, STTMetrics):
-        logger.info(
-            "STT metrics",
-            extra={
-                "audio_duration": round(metrics.audio_duration, 2),
-            },
-        )
+    # elif isinstance(metrics, STTMetrics):
+    #     logger.info(
+    #         "STT metrics",
+    #         extra={
+    #             "audio_duration": round(metrics.audio_duration, 2),
+    #         },
+    #     )
     elif isinstance(metrics, STFMetrics):
         logger.info(
             "STF metrics",
