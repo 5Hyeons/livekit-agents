@@ -81,7 +81,7 @@ class FaceAnimatorStream:
             raise RuntimeError("FaceAnimatorStream is closed")
         
         # Start metrics tracking on first frame (for animation_with_audio mode)
-        if self._output_mode == OutputMode.ANIMATION_WITH_AUDIO and self._started_time == 0:
+        if self._started_time == 0:
             self._started_time = time.perf_counter()
             self._request_id = str(uuid.uuid4())
         
@@ -198,6 +198,12 @@ class FaceAnimatorStream:
                     animation_output = await self._send_inference_request(audio_to_process)
                     
                     if animation_output is not None and animation_output.size > 0:
+                        # Record TTFF on first output
+                        if not self._first_output_recorded and self._started_time > 0:
+                            self._ttff = time.perf_counter() - self._started_time
+                            self._first_output_recorded = True
+                            logger.debug(f"First frame generated: TTFF={self._ttff*1000:.0f}ms")
+                        
                         # Output is (1, num_frames, 52) - need to flatten
                         flattened_output = animation_output[0]
                         for blendshape_frame in flattened_output:
@@ -217,10 +223,21 @@ class FaceAnimatorStream:
             logger.error(f"FaceAnimator processing error: {e}", exc_info=True)
         finally:
             duration = time.time() - start_time
-            logger.info(
-                f"FaceAnimator processing completed: {frames_processed} audio frames, "
-                f"{animations_generated} animations, {duration:.2f}s"
-            )
+            # Emit metrics
+            if self._started_time > 0 and self._first_output_recorded:
+                total_duration = time.perf_counter() - self._started_time
+                metrics = STFMetrics(
+                    label=f"{self._face_animator._model_name}_streaming",
+                    request_id=self._request_id,
+                    timestamp=time.time(),
+                    duration=total_duration,
+                    ttff=self._ttff,
+                    frames_generated=animations_generated,
+                    audio_duration=duration,
+                )
+                self._face_animator._emit_metrics(metrics)
+                logger.debug(f"Metrics emitted: TTFF={self._ttff*1000:.0f}ms")
+
             await self._output_queue.put(None)
     
     async def _process_frames_with_audio(self) -> None:
@@ -262,6 +279,12 @@ class FaceAnimatorStream:
                     animation_output = await self._send_inference_request(audio_to_process)
                     
                     if animation_output is not None and animation_output.size > 0:
+                        # Record TTFF on first output
+                        if not self._first_output_recorded and self._started_time > 0:
+                            self._ttff = time.perf_counter() - self._started_time
+                            self._first_output_recorded = True
+                            logger.debug(f"First frame generated: TTFF={self._ttff*1000:.0f}ms")
+                        
                         # Output shape is (1, num_frames, 52) - need to flatten first dimension
                         flattened_output = animation_output[0]
                         num_frames = flattened_output.shape[0]
@@ -276,12 +299,6 @@ class FaceAnimatorStream:
                             
                             # Extract audio chunk (pass as int16 numpy array)
                             audio_chunk_samples = audio_to_process[start_sample:end_sample]
-                            
-                            # Record TTFF on first output
-                            if not self._first_output_recorded and self._started_time > 0:
-                                self._ttff = time.perf_counter() - self._started_time
-                                self._first_output_recorded = True
-                                logger.debug(f"First frame generated: TTFF={self._ttff*1000:.0f}ms")
                             
                             await self._output_queue.put((
                                 blendshape_frame,
@@ -304,10 +321,6 @@ class FaceAnimatorStream:
                         end_sample = ((i + 1) * total_samples) // num_frames if i < num_frames - 1 else total_samples
                         audio_chunk_samples = audio_buffer[start_sample:end_sample]
                         
-                        if not self._first_output_recorded and self._started_time > 0:
-                            self._ttff = time.perf_counter() - self._started_time
-                            self._first_output_recorded = True
-                        
                         await self._output_queue.put((
                             blendshape_frame,
                             audio_chunk_samples,
@@ -324,19 +337,17 @@ class FaceAnimatorStream:
             # Emit metrics
             if self._started_time > 0 and self._first_output_recorded:
                 total_duration = time.perf_counter() - self._started_time
-                
-                if hasattr(self._face_animator, '_emit_metrics'):
-                    metrics = STFMetrics(
-                        label=f"{self._face_animator._model_name}_streaming",
-                        request_id=self._request_id,
-                        timestamp=time.time(),
-                        duration=total_duration,
-                        ttff=self._ttff,
-                        frames_generated=animations_generated,
-                        audio_duration=duration,
-                    )
-                    self._face_animator._emit_metrics(metrics)
-                    logger.debug(f"Metrics emitted: TTFF={self._ttff*1000:.0f}ms")
+                metrics = STFMetrics(
+                    label=f"{self._face_animator._model_name}_streaming",
+                    request_id=self._request_id,
+                    timestamp=time.time(),
+                    duration=total_duration,
+                    ttff=self._ttff,
+                    frames_generated=animations_generated,
+                    audio_duration=duration,
+                )
+                self._face_animator._emit_metrics(metrics)
+                logger.debug(f"Metrics emitted: TTFF={self._ttff*1000:.0f}ms")
             
             await self._output_queue.put(None)
 
