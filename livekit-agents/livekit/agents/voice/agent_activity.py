@@ -1475,6 +1475,8 @@ class AgentActivity(RecognitionHooks):
         instructions: str | None = None,
         _tools_messages: Sequence[llm.ChatItem] | None = None,
     ) -> None:
+        self._session._update_agent_state("thinking")
+
         from .agent import ModelSettings
 
         current_span = trace.get_current_span()

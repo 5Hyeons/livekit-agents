@@ -200,7 +200,7 @@ class FaceAgent(Agent):
 
 def prewarm(proc: JobProcess):
     # VAD 모델 로드
-    proc.userdata["vad"] = silero.VAD.load(activation_threshold=0.8)
+    proc.userdata["vad"] = silero.VAD.load(activation_threshold=0.6)
     # 데이터베이스는 각 사용자별로 개별 생성하므로 prewarm에서 제거
 
 async def entrypoint(ctx: JobContext):
