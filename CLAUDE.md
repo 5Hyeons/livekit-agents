@@ -34,7 +34,7 @@ Extensive plugin system with 35+ integrations:
 
 ### Environment Setup
 ```bash
-# Install with basic plugins
+# Install with basic plugins (requires Python 3.10+)
 pip install "livekit-agents[openai,silero,deepgram,cartesia,turn-detector]~=1.0"
 
 # Development dependencies (uses UV)
@@ -107,6 +107,8 @@ Animation output modes:
 - `ANIMATION_ONLY`: Outputs animation data only (legacy mode)
 - `ANIMATION_WITH_AUDIO`: Outputs both animation and audio data (recommended)
 
+**Recent STF Improvements**: Enhanced agent activity logic and improved Speech-To-Face processing for more stable animation generation and better synchronization between audio and animation streams.
+
 The output mode information is automatically passed to clients via animation stream attributes as `lk.animation_output_mode`.
 
 ### Entry Points
@@ -118,6 +120,36 @@ The output mode information is automatically passed to clients via animation str
 - Support agent handoff between different specialized agents
 - Use `@function_tool` for tool creation and agent transitions
 - Session context and userdata management for state persistence
+
+### RPC Integration
+LiveKit Agents support bidirectional RPC (Remote Procedure Call) communication:
+
+**Agent State Notifications**: Agents automatically notify clients of state changes
+```python
+@session.on("agent_state_changed")
+def on_agent_state_changed(ev):
+    # Automatically sends RPC with old_state and new_state to connected participants
+    payload = json.dumps({"old_state": ev.old_state, "new_state": ev.new_state})
+    await ctx.room.local_participant.perform_rpc(
+        destination_identity=participant.identity,
+        method="agent_state_changed",
+        payload=payload
+    )
+```
+
+**Registering RPC Methods**: Agents can register methods callable by clients
+```python
+@ctx.room.local_participant.register_rpc_method("interrupt_agent")
+async def interrupt_agent(data):
+    """Client can interrupt agent via RPC"""
+    logger.info(f"RPC 'interrupt_agent' called by: {data.caller_identity}")
+    # Handle interruption logic
+```
+
+Common RPC methods include:
+- `interrupt_agent`: Allow clients to interrupt the agent
+- `check_attention`: Handle attention checks for inactive users
+- Time-based interactions: `morning_greeting`, `lunch_time`, `evening_chat`, etc.
 
 ## Key Configuration Files
 
