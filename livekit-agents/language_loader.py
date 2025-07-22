@@ -77,7 +77,7 @@ def load_language_config(language_code: str) -> Optional[LanguageConfig]:
             return load_language_config("ko")
         return None
 
-def get_base_instructions(language_code: str, user_name: Optional[str] = None, context: Optional[str] = None) -> str:
+def get_base_instructions(language_code: str, user_name: Optional[str] = None, context: Optional[str] = None, custom_persona: Optional[str] = None) -> str:
     """
     언어별 기본 지시사항을 반환합니다.
     
@@ -85,16 +85,23 @@ def get_base_instructions(language_code: str, user_name: Optional[str] = None, c
         language_code: 언어 코드
         user_name: 사용자 이름 (선택적)
         context: 이전 대화 컨텍스트 (선택적)
+        custom_persona: 커스텀 페르소나 (선택적, 빈 문자열이면 기본 페르소나 사용)
         
     Returns:
         기본 지시사항 문자열
     """
-    config = load_language_config(language_code)
-    if not config:
-        logger.error(f"언어 설정을 로드할 수 없습니다: {language_code}")
-        return ""
-    
-    instructions = config.base_instructions
+    # 커스텀 페르소나가 제공되고 비어있지 않은 경우 사용
+    if custom_persona and custom_persona.strip():
+        instructions = custom_persona
+        logger.info(f"커스텀 페르소나 사용 (길이: {len(custom_persona)})")
+    else:
+        # 기본 페르소나 사용 (locales에서 로드)
+        config = load_language_config(language_code)
+        if not config:
+            logger.error(f"언어 설정을 로드할 수 없습니다: {language_code}")
+            return ""
+        instructions = config.base_instructions
+        logger.info(f"기본 페르소나 사용 (언어: {language_code})")
     
     # 사용자 이름 추가
     if user_name:

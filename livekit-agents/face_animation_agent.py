@@ -77,10 +77,11 @@ def map_language_to_deepgram(language_code: str) -> str:
 
 
 class FaceAgent(Agent):
-    def __init__(self, user_data: UserData, db: UserDatabase, user_language: str = "ko"):
+    def __init__(self, user_data: UserData, db: UserDatabase, user_language: str = "ko", custom_persona: str = ""):
         self.user_data = user_data
         self.db = db
         self.user_language = user_language
+        self.custom_persona = custom_persona
         
         # 언어별 대화 시작 메시지 로드
         self.conversation_starters = get_conversation_starters(self.user_language)
@@ -95,11 +96,12 @@ class FaceAgent(Agent):
         # 이전 대화 컨텍스트 가져오기
         context = self.db.get_recent_context(user_data.participant_id, message_count=120)
         
-        # 언어별 기본 지시사항 로드 (사용자 이름과 컨텍스트 포함)
+        # 언어별 기본 지시사항 로드 (사용자 이름, 컨텍스트, 커스텀 페르소나 포함)
         base_instructions = get_base_instructions(
             self.user_language, 
             user_data.display_name, 
-            context
+            context,
+            custom_persona=self.custom_persona
         )
             
         super().__init__(
@@ -215,8 +217,10 @@ async def entrypoint(ctx: JobContext):
     # 초기 메타데이터 로깅
     logger.info(f"참가자 초기 메타데이터: {participant.metadata}")
     
-    # 메타데이터에서 사용자 언어 추출
+    # 메타데이터에서 사용자 언어 및 커스텀 설정 추출
     user_language = "ko"  # 기본값
+    agent_language = "ko"  # 기본값 (현재는 user_language와 동일)
+    custom_persona = ""    # 기본값 (빈 문자열 - 기본 페르소나 사용)
     metadata = {}
     supported_languages = ["ko", "en", "ja", "zh"]  # 지원하는 언어들
     
@@ -224,15 +228,49 @@ async def entrypoint(ctx: JobContext):
         if participant.metadata:
             import json
             metadata = json.loads(participant.metadata)
-            if "deviceLanguage" in metadata:
+            
+            # 새로운 메타데이터 구조 확인
+            if "userLanguage" in metadata:
+                detected_language = metadata["userLanguage"]
+                if detected_language in supported_languages:
+                    user_language = detected_language
+                    logger.info(f"사용자 언어 감지 (userLanguage): {user_language}")
+                else:
+                    logger.info(f"지원하지 않는 사용자 언어: {detected_language}, 기본 언어 사용: {user_language}")
+            
+            # Agent 언어 확인 (현재는 user_language와 동일하게 처리)
+            if "agentLanguage" in metadata:
+                detected_agent_language = metadata["agentLanguage"]
+                if detected_agent_language in supported_languages:
+                    agent_language = detected_agent_language
+                    logger.info(f"Agent 언어 감지 (agentLanguage): {agent_language}")
+                else:
+                    logger.info(f"지원하지 않는 Agent 언어: {detected_agent_language}, 사용자 언어와 동일하게 설정: {user_language}")
+                    agent_language = user_language
+            else:
+                agent_language = user_language
+            
+            # 커스텀 페르소나 확인
+            if "customPersona" in metadata:
+                custom_persona = metadata["customPersona"]
+                if custom_persona and custom_persona.strip():
+                    logger.info(f"커스텀 페르소나 감지 (길이: {len(custom_persona)})")
+                else:
+                    logger.info("빈 커스텀 페르소나 - 기본 페르소나 사용")
+                    custom_persona = ""
+            
+            # 하위 호환성: 기존 deviceLanguage도 지원
+            elif "deviceLanguage" in metadata and "userLanguage" not in metadata:
                 detected_language = metadata["deviceLanguage"]
                 if detected_language in supported_languages:
                     user_language = detected_language
-                    logger.info(f"사용자 언어 감지: {user_language}")
+                    agent_language = detected_language
+                    logger.info(f"사용자 언어 감지 (deviceLanguage - 호환성): {user_language}")
                 else:
                     logger.info(f"지원하지 않는 언어 감지: {detected_language}, 기본 언어 사용: {user_language}")
+                    
     except (json.JSONDecodeError, Exception) as e:
-        logger.warning(f"메타데이터 파싱 오류: {e}, 기본 언어 사용: {user_language}")
+        logger.warning(f"메타데이터 파싱 오류: {e}, 기본값 사용: user_language={user_language}, agent_language={agent_language}")
     
     # 사용자별 개별 데이터베이스 생성
     db = UserDatabase(participant.identity)
@@ -243,6 +281,9 @@ async def entrypoint(ctx: JobContext):
         db.update_user_language(participant.identity, user_language)
         user_data.language = user_language
         logger.info(f"사용자 언어 업데이트: {participant.identity} -> {user_language}")
+    
+    # 언어 및 페르소나 설정 로깅
+    logger.info(f"최종 설정 - 사용자 언어: {user_language}, Agent 언어: {agent_language}, 커스텀 페르소나: {'설정됨' if custom_persona else '기본값'}")
     
     # 메타데이터 저장
     if metadata:
@@ -319,8 +360,8 @@ async def entrypoint(ctx: JobContext):
     agent_identity = ctx.room.local_participant.identity
     logger.info(f"Agent Identity: {agent_identity}")
 
-    # Agent 인스턴스 생성 (사용자 언어 전달)
-    agent = FaceAgent(user_data, db, user_language)
+    # Agent 인스턴스 생성 (사용자 언어 및 커스텀 페르소나 전달)
+    agent = FaceAgent(user_data, db, user_language, custom_persona)
     
     # 메트릭스 수집 이벤트 리스너 등록
     @session.on("metrics_collected")
