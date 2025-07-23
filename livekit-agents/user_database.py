@@ -261,7 +261,7 @@ class UserDatabase:
                 current_session = msg['session_id']
                 
             role_name = "사용자" if msg['role'] == "user" else "어시스턴트"
-            context_lines.append(f"{role_name}: {msg['content']}")
+            context_lines.append(f"{msg['role']}: {msg['content']}")
             
         return "\n".join(context_lines)
         

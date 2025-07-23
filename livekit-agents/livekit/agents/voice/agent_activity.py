@@ -635,11 +635,11 @@ class AgentActivity(RecognitionHooks):
             return
         
         # 오디오 입력 로깅 (audio_logger 사용)
-        # try:
-        #     from .audio_logger import log_audio_frame_info
-        #     log_audio_frame_info(frame)
-        # except Exception as e:
-        #     logger.debug(f"오디오 로깅 오류: {e}")
+        try:
+            from .audio_logger import log_audio_frame_info
+            log_audio_frame_info(frame)
+        except Exception as e:
+            logger.debug(f"오디오 로깅 오류: {e}")
 
         if (
             self._current_speech

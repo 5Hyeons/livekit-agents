@@ -3,6 +3,7 @@ import logging
 import os
 from datetime import datetime
 from typing import Dict, Any, Optional
+from dataclasses import dataclass
 import time
 import random
 
@@ -52,6 +53,66 @@ from livekit.agents.voice.audio_logger import log_audio_frame_info
 load_dotenv()  # .env 파일에서 환경 변수 로드
 logger = logging.getLogger("face-animation-agent")
 
+@dataclass
+class VoiceSettings:
+    stability: float
+    similarity_boost: float
+    style: float
+    speed: float
+
+@dataclass
+class ElevenLabsConfig:
+    voice_id: str
+    model: str
+    voice_settings: VoiceSettings
+    
+    @classmethod
+    def from_voice_name(cls, voice_name: str) -> 'ElevenLabsConfig':
+        """음성 이름을 ElevenLabs 설정으로 매핑 (지원 음성: FEMALE_1/FEMALE_2/MALE_1/MALE_2)"""
+        configs = {
+            "FEMALE_1": cls(
+                voice_id="uyVNoMrnUku1dZyVEXwD",
+                model="eleven_turbo_v2_5",
+                voice_settings=VoiceSettings(
+                    stability=0.5,
+                    similarity_boost=0.75,
+                    style=0.0,
+                    speed=1.0,
+                ),
+            ),
+            "FEMALE_2": cls(
+                voice_id="uyVNoMrnUku1dZyVEXwD",
+                model="eleven_turbo_v2_5",
+                voice_settings=VoiceSettings(
+                    stability=0.5,
+                    similarity_boost=0.75,
+                    style=0.0,
+                    speed=1.0,
+                ),
+            ),
+            "MALE_1": cls(
+                voice_id="YBRudLRm83BV5Mazcr42",
+                model="eleven_flash_v2_5",
+                voice_settings=VoiceSettings(
+                    stability=0.88,
+                    similarity_boost=0.74,
+                    style=0.34,
+                    speed=1.07,
+                ),
+            ),
+            "MALE_2": cls(
+                voice_id="YBRudLRm83BV5Mazcr42",
+                model="eleven_flash_v2_5",
+                voice_settings=VoiceSettings(
+                    stability=0.7,
+                    similarity_boost=0.75,
+                    style=0.0,
+                    speed=1.07,
+                ),
+            ),
+        }
+        return configs.get(voice_name, configs["FEMALE_1"])
+
 
 def get_language_name(language_code: str) -> str:
     """언어 코드를 언어 이름으로 변환 (지원 언어: 한국어/영어/일본어/중국어)"""
@@ -77,7 +138,7 @@ def map_language_to_deepgram(language_code: str) -> str:
 
 
 class FaceAgent(Agent):
-    def __init__(self, user_data: UserData, db: UserDatabase, user_language: str = "ko", custom_persona: str = ""):
+    def __init__(self, user_data: UserData, db: UserDatabase, user_language: str = "ko", custom_persona: str = "", voice_name: str = "FEMALE_1"):
         self.user_data = user_data
         self.db = db
         self.user_language = user_language
@@ -103,20 +164,21 @@ class FaceAgent(Agent):
             context,
             custom_persona=self.custom_persona
         )
-            
+        
+        elevenlabs_config = ElevenLabsConfig.from_voice_name(voice_name)
         super().__init__(
             instructions=base_instructions,
             stt=deepgram.STT(model="nova-2-general", language=self.user_language),
             # stt=openai.STT(model="gpt-4o-transcribe", language=self.user_language),
             llm=openai.LLM(model="gpt-4o"),
             tts=elevenlabs.TTS(
-                    voice_id="tZarJVdIxWQ9lIXIV9qg",
-                    model="eleven_turbo_v2_5",
+                    voice_id=elevenlabs_config.voice_id,
+                    model=elevenlabs_config.model,
                     voice_settings=elevenlabs.VoiceSettings(
-                        stability=0.5,
-                        similarity_boost=0.75,
-                        style=0.0,
-                        speed=1.0,
+                        stability=elevenlabs_config.voice_settings.stability,
+                        similarity_boost=elevenlabs_config.voice_settings.similarity_boost,
+                        style=elevenlabs_config.voice_settings.style,
+                        speed=elevenlabs_config.voice_settings.speed,
                     ),
                     encoding="mp3_44100_32",
                 ),
@@ -218,9 +280,10 @@ async def entrypoint(ctx: JobContext):
     logger.info(f"참가자 초기 메타데이터: {participant.metadata}")
     
     # 메타데이터에서 사용자 언어 및 커스텀 설정 추출
-    user_language = "ko"  # 기본값
-    agent_language = "ko"  # 기본값 (현재는 user_language와 동일)
-    custom_persona = ""    # 기본값 (빈 문자열 - 기본 페르소나 사용)
+    user_language = "ko"    # 기본값
+    agent_language = "ko"   # 기본값 (현재는 user_language와 동일)
+    custom_persona = ""     # 기본값 (빈 문자열 - 기본 페르소나 사용)
+    voice_name = "FEMALE_1" # 기본값 
     metadata = {}
     supported_languages = ["ko", "en", "ja", "zh"]  # 지원하는 언어들
     
@@ -257,18 +320,14 @@ async def entrypoint(ctx: JobContext):
                     logger.info(f"커스텀 페르소나 감지 (길이: {len(custom_persona)})")
                 else:
                     logger.info("빈 커스텀 페르소나 - 기본 페르소나 사용")
-                    custom_persona = ""
-            
-            # 하위 호환성: 기존 deviceLanguage도 지원
-            elif "deviceLanguage" in metadata and "userLanguage" not in metadata:
-                detected_language = metadata["deviceLanguage"]
-                if detected_language in supported_languages:
-                    user_language = detected_language
-                    agent_language = detected_language
-                    logger.info(f"사용자 언어 감지 (deviceLanguage - 호환성): {user_language}")
+
+            if "voiceName" in metadata:
+                voice_name = metadata["voiceName"]
+                if voice_name and voice_name.strip():
+                    logger.info(f"음성 이름 감지 (voiceName): {voice_name}")
                 else:
-                    logger.info(f"지원하지 않는 언어 감지: {detected_language}, 기본 언어 사용: {user_language}")
-                    
+                    logger.info("빈 음성 이름 - 기본 음성 사용")
+
     except (json.JSONDecodeError, Exception) as e:
         logger.warning(f"메타데이터 파싱 오류: {e}, 기본값 사용: user_language={user_language}, agent_language={agent_language}")
     
@@ -361,7 +420,7 @@ async def entrypoint(ctx: JobContext):
     logger.info(f"Agent Identity: {agent_identity}")
 
     # Agent 인스턴스 생성 (사용자 언어 및 커스텀 페르소나 전달)
-    agent = FaceAgent(user_data, db, user_language, custom_persona)
+    agent = FaceAgent(user_data, db, user_language, custom_persona, voice_name)
     
     # 메트릭스 수집 이벤트 리스너 등록
     @session.on("metrics_collected")

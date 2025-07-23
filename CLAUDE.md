@@ -185,7 +185,7 @@ Provider-specific API keys (examples):
 4. Add optional dependency in main `pyproject.toml`
 
 ### Creating Agents
-1. Start from `examples/voice_agents/basic_agent.py` or `livekit-agents/face_animation_agent.py` for animation
+1. Start from `examples/voice_agents/basic_agent.py` or create custom agents
 2. Customize Agent instructions and tools
 3. Select appropriate plugin combinations (STT, LLM, TTS, STF)
 4. Configure RoomIO options for animation if needed:
@@ -196,6 +196,30 @@ Provider-specific API keys (examples):
    )
    ```
 5. Test with `console` mode first, then `dev` mode
+
+### Recent Architectural Improvements
+
+**Modular Agent Structure**: The monolithic `face_animation_agent.py` has been refactored into modular components:
+- `main.py`: Entry point and session orchestration
+- `agent/wallmate_agent.py`: Core agent logic (renamed from FaceAgent)
+- `handlers/`: Event handlers for RPC, session, and agent events
+- `config/`: Configuration modules for base instructions and voice settings
+
+**Dynamic Response System**: Replaced locale-based fixed messages with dynamic persona-based responses:
+- All responses generated dynamically using `generate_reply()` based on agent's persona
+- System contexts injected via `[SYSTEM_CONTEXT: ...]` format in user_input
+- Custom personas from metadata override default Lulu persona
+- Removed dependency on `locales/` folder with predefined messages
+
+**Conversation History Management**: Improved handling of conversation history:
+- Loads previous conversation history (120 messages) into `chat_ctx` during agent initialization
+- Prevents duplicate saves by tracking `_preloaded_message_count`
+- Only new messages from current session are saved to database
+- Proper handling of read-only chat contexts using `copy()` and `update_chat_ctx()`
+
+**Function Tool Integration**: Enhanced function tools to provide system contexts:
+- `save_user_name` returns appropriate system context for agent acknowledgment
+- Tools guide agent behavior through contextual returns rather than fixed messages
 
 ### Plugin Integration
 - Import from `livekit.plugins.provider_name`
