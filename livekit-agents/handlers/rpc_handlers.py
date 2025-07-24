@@ -75,6 +75,45 @@ class RPCHandlers:
                 logger.error(f"Error generating attention check: {e}")
 
         return check_attention
+    
+    def create_send_text_input_handler(self):
+        """
+        Create text input RPC handler for direct text messages from client.
+        
+        Returns:
+            Async function to handle text input requests
+        """
+        
+        async def send_text_input(data: rtc.RpcInvocationData) -> str:
+            """Handle direct text input from Unity client."""
+            logger.info(f"RPC 'send_text_input' called by: {data.caller_identity}")
+            logger.info(f"Text input payload: {data.payload}")
+            
+            try:
+                import json
+                
+                # Parse the payload
+                payload = json.loads(data.payload)
+                text = payload.get("text", "")
+                
+                if not text:
+                    logger.warning("Empty text received in send_text_input RPC")
+                    return json.dumps({"status": "error", "message": "Empty text"})
+                
+                # Generate reply using the text input
+                logger.info(f"Processing text input: {text}")
+                await self.session.generate_reply(user_input=text)
+                
+                return json.dumps({"status": "success"})
+                
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to parse JSON payload: {e}")
+                return json.dumps({"status": "error", "message": "Invalid JSON"})
+            except Exception as e:
+                logger.error(f"Error processing text input: {e}")
+                return json.dumps({"status": "error", "message": str(e)})
+        
+        return send_text_input
 
     def register_all_methods(self, local_participant: rtc.LocalParticipant):
         """
@@ -88,5 +127,8 @@ class RPCHandlers:
         local_participant.register_rpc_method(
             "check_attention", self.create_attention_check_handler()
         )
+        local_participant.register_rpc_method(
+            "send_text_input", self.create_send_text_input_handler()
+        )
 
-        logger.info("RPC methods registered: interrupt_agent, check_attention")
+        logger.info("RPC methods registered: interrupt_agent, check_attention, send_text_input")
