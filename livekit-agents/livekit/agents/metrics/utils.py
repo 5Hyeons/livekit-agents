@@ -3,7 +3,15 @@ from __future__ import annotations
 import logging
 
 from ..log import logger as default_logger
-from .base import AgentMetrics, EOUMetrics, LLMMetrics, RealtimeModelMetrics, STTMetrics, TTSMetrics
+from .base import (
+    AgentMetrics,
+    EOUMetrics,
+    LLMMetrics,
+    RealtimeModelMetrics,
+    STTMetrics,
+    STFMetrics,
+    TTSMetrics,
+)
 
 
 def log_metrics(metrics: AgentMetrics, *, logger: logging.Logger | None = None) -> None:
@@ -49,10 +57,19 @@ def log_metrics(metrics: AgentMetrics, *, logger: logging.Logger | None = None) 
                 "transcription_delay": round(metrics.transcription_delay, 2),
             },
         )
-    elif isinstance(metrics, STTMetrics):
+    # elif isinstance(metrics, STTMetrics):
+    #     logger.info(
+    #         "STT metrics",
+    #         extra={
+    #             "audio_duration": round(metrics.audio_duration, 2),
+    #         },
+    #     )
+    elif isinstance(metrics, STFMetrics):
         logger.info(
-            "STT metrics",
+            "STF metrics",
             extra={
+                "ttff": round(metrics.ttff, 2),
                 "audio_duration": round(metrics.audio_duration, 2),
+                "frames_generated": metrics.frames_generated,
             },
         )

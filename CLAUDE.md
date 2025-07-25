@@ -1,0 +1,239 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Repository Overview
+
+This is the **LiveKit Agents** framework - a Python framework for building realtime voice AI agents that can see, hear, and speak. The repository provides a comprehensive ecosystem for creating server-side agentic applications with WebRTC integration.
+
+## Architecture
+
+### Core Framework (`livekit-agents/`)
+- **Agent & AgentSession**: Core agent logic and session management for user interactions
+- **Voice Pipeline**: Complete voice processing chain (STT → LLM → TTS) with VAD integration
+- **Animation Pipeline**: Face animation data generation (STF - Speech-To-Face) with WebRTC streaming
+- **Plugin System**: Modular architecture supporting multiple AI service providers
+- **Job Scheduling**: Built-in task distribution system with dispatch APIs
+- **WebRTC Integration**: Real-time audio/video communication via LiveKit server
+
+### Plugin Ecosystem (`livekit-plugins/`)
+Extensive plugin system with 35+ integrations:
+- **STT**: Deepgram, AssemblyAI, Azure, OpenAI, Google, etc.
+- **LLM**: OpenAI, Anthropic, Google, AWS Bedrock, Groq, etc.
+- **TTS**: ElevenLabs, OpenAI, Cartesia, Azure, Google, etc.
+- **Avatars**: Tavus, Hedra, Bithuman, Bey for video avatar integration
+- **STF**: FaceAnimator for Speech-To-Face animation generation
+- **Specialized**: Turn detection, VAD (Silero), MCP integration
+
+### Development Structure
+- **Workspace Setup**: UV-based monorepo with workspace members
+- **Examples**: Comprehensive examples in `examples/` covering voice agents, avatars, primitives
+- **Testing**: Comprehensive test suite with Docker-based integration testing
+
+## Development Commands
+
+### Environment Setup
+```bash
+# Install with basic plugins (requires Python 3.10+)
+pip install "livekit-agents[openai,silero,deepgram,cartesia,turn-detector]~=1.0"
+
+# Development dependencies (uses UV)
+uv sync --all-extras --dev
+```
+
+### Running Agents
+```bash
+# Terminal testing (no external dependencies)
+python myagent.py console
+
+# Development with hot reloading
+python myagent.py dev
+
+# Production deployment
+python myagent.py start
+```
+
+### Quality Assurance
+```bash
+# Linting and formatting
+ruff check
+ruff format
+
+# Type checking
+mypy
+
+# Running tests
+pytest
+pytest tests/test_specific.py  # Single test file
+
+# Docker-based integration tests
+cd tests/
+make test PLUGIN=plugin_name
+```
+
+## Agent Development Patterns
+
+### Basic Agent Structure
+All agents follow this pattern:
+```python
+async def entrypoint(ctx: JobContext):
+    await ctx.connect()
+    
+    agent = Agent(instructions="...")
+    session = AgentSession(
+        vad=silero.VAD.load(),
+        stt=provider.STT(),
+        llm=provider.LLM(),
+        tts=provider.TTS(),
+        stf=FaceAnimator(output_mode=OutputMode.ANIMATION_ONLY),  # Optional for face animation
+    )
+    
+    await session.start(agent=agent, room=ctx.room)
+```
+
+### Face Animation Agents
+For agents with face animation capabilities:
+```python
+from livekit.agents.stf import FaceAnimator, OutputMode
+
+# Animation-only mode (legacy)
+stf=FaceAnimator(chunk_duration_sec=0.5, output_mode=OutputMode.ANIMATION_ONLY)
+
+# Animation with audio mode (recommended)
+stf=FaceAnimator(chunk_duration_sec=0.5, output_mode=OutputMode.ANIMATION_WITH_AUDIO)
+```
+
+Animation output modes:
+- `ANIMATION_ONLY`: Outputs animation data only (legacy mode)
+- `ANIMATION_WITH_AUDIO`: Outputs both animation and audio data (recommended)
+
+**Recent STF Improvements**: Enhanced agent activity logic and improved Speech-To-Face processing for more stable animation generation and better synchronization between audio and animation streams.
+
+The output mode information is automatically passed to clients via animation stream attributes as `lk.animation_output_mode`.
+
+### Entry Points
+- Use `cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint))` pattern
+- All examples in `examples/` directory follow this pattern
+- Agent files typically end with `if __name__ == "__main__": cli.run_app(...)`
+
+### Multi-Agent Systems
+- Support agent handoff between different specialized agents
+- Use `@function_tool` for tool creation and agent transitions
+- Session context and userdata management for state persistence
+
+### RPC Integration
+LiveKit Agents support bidirectional RPC (Remote Procedure Call) communication:
+
+**Agent State Notifications**: Agents automatically notify clients of state changes
+```python
+@session.on("agent_state_changed")
+def on_agent_state_changed(ev):
+    # Automatically sends RPC with old_state and new_state to connected participants
+    payload = json.dumps({"old_state": ev.old_state, "new_state": ev.new_state})
+    await ctx.room.local_participant.perform_rpc(
+        destination_identity=participant.identity,
+        method="agent_state_changed",
+        payload=payload
+    )
+```
+
+**Registering RPC Methods**: Agents can register methods callable by clients
+```python
+@ctx.room.local_participant.register_rpc_method("interrupt_agent")
+async def interrupt_agent(data):
+    """Client can interrupt agent via RPC"""
+    logger.info(f"RPC 'interrupt_agent' called by: {data.caller_identity}")
+    # Handle interruption logic
+```
+
+Common RPC methods include:
+- `interrupt_agent`: Allow clients to interrupt the agent
+- `check_attention`: Handle attention checks for inactive users
+- Time-based interactions: `morning_greeting`, `lunch_time`, `evening_chat`, etc.
+
+## Key Configuration Files
+
+- **Root `pyproject.toml`**: Workspace configuration, dev dependencies, linting rules
+- **`livekit-agents/pyproject.toml`**: Main package configuration with extensive optional dependencies
+- **Plugin `pyproject.toml`**: Individual plugin configurations
+- **`tests/Makefile`**: Docker-based testing infrastructure
+- **`uv.lock`**: Dependency lock file for reproducible builds
+
+## Environment Variables
+
+Core variables for LiveKit integration:
+- `LIVEKIT_URL`: LiveKit server URL
+- `LIVEKIT_API_KEY`: API key for authentication  
+- `LIVEKIT_API_SECRET`: API secret for authentication
+
+Provider-specific API keys (examples):
+- `DEEPGRAM_API_KEY`, `OPENAI_API_KEY`, `ELEVENLABS_API_KEY`, etc.
+
+## Testing Strategy
+
+- **Unit Tests**: Core functionality testing
+- **Integration Tests**: Docker-based with toxiproxy for network simulation
+- **Plugin Testing**: Individual plugin validation
+- **Example Validation**: All examples serve as integration tests
+
+## Common Development Tasks
+
+### Adding New Plugins
+1. Create plugin directory in `livekit-plugins/`
+2. Follow existing plugin structure (STT/TTS/LLM base classes)
+3. Add to workspace members in root `pyproject.toml`
+4. Add optional dependency in main `pyproject.toml`
+
+### Creating Agents
+1. Start from `examples/voice_agents/basic_agent.py` or create custom agents
+2. Customize Agent instructions and tools
+3. Select appropriate plugin combinations (STT, LLM, TTS, STF)
+4. Configure RoomIO options for animation if needed:
+   ```python
+   room_output_options = RoomOutputOptions(
+       audio_enabled=True,
+       animation_enabled=True,  # Enable animation output
+   )
+   ```
+5. Test with `console` mode first, then `dev` mode
+
+### Recent Architectural Improvements
+
+**Modular Agent Structure**: The monolithic `face_animation_agent.py` has been refactored into modular components:
+- `main.py`: Entry point and session orchestration
+- `agent/wallmate_agent.py`: Core agent logic (renamed from FaceAgent)
+- `handlers/`: Event handlers for RPC, session, and agent events
+- `config/`: Configuration modules for base instructions and voice settings
+
+**Dynamic Response System**: Replaced locale-based fixed messages with dynamic persona-based responses:
+- All responses generated dynamically using `generate_reply()` based on agent's persona
+- System contexts injected via `[SYSTEM_CONTEXT: ...]` format in user_input
+- Custom personas from metadata override default Lulu persona
+- Removed dependency on `locales/` folder with predefined messages
+
+**Conversation History Management**: Improved handling of conversation history:
+- Loads previous conversation history (120 messages) into `chat_ctx` during agent initialization
+- Prevents duplicate saves by tracking `_preloaded_message_count`
+- Only new messages from current session are saved to database
+- Proper handling of read-only chat contexts using `copy()` and `update_chat_ctx()`
+
+**Function Tool Integration**: Enhanced function tools to provide system contexts:
+- `save_user_name` returns appropriate system context for agent acknowledgment
+- Tools guide agent behavior through contextual returns rather than fixed messages
+
+### Plugin Integration
+- Import from `livekit.plugins.provider_name`
+- Import STF from `livekit.agents.stf` for face animation
+- Use consistent initialization patterns across providers
+- Handle API credentials via environment variables
+
+### Animation Stream Attributes
+Animation streams automatically include metadata attributes:
+- `lk.animation_output_mode`: `"animation_only"` or `"animation_with_audio"`
+- `lk.animation_segment_id`: Unique identifier for animation segments
+- `lk.animation_sample_rate`: Audio sample rate for synchronization
+- `lk.animation_final`: Indicates final frame in a segment
+- `lk.animation_interrupted`: Indicates if animation was interrupted
+
+### Dual Mode Detection
+The system automatically detects dual mode (audio + animation simultaneously enabled) and sets appropriate output mode attributes for client consumption.

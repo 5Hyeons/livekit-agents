@@ -21,7 +21,7 @@ from opentelemetry import context as otel_context, trace
 
 from livekit import rtc
 
-from .. import llm, stt, tts, utils, vad
+from .. import llm, stt, tts, stf, utils, vad
 from ..cli import cli
 from ..job import get_job_context
 from ..llm import ChatContext
@@ -145,6 +145,7 @@ class AgentSession(rtc.EventEmitter[EventTypes], Generic[Userdata_T]):
         vad: NotGivenOr[vad.VAD] = NOT_GIVEN,
         llm: NotGivenOr[llm.LLM | llm.RealtimeModel] = NOT_GIVEN,
         tts: NotGivenOr[tts.TTS] = NOT_GIVEN,
+        stf: NotGivenOr[stf.STF] = NOT_GIVEN,
         mcp_servers: NotGivenOr[list[mcp.MCPServer]] = NOT_GIVEN,
         userdata: NotGivenOr[Userdata_T] = NOT_GIVEN,
         allow_interruptions: bool = True,
@@ -273,6 +274,7 @@ class AgentSession(rtc.EventEmitter[EventTypes], Generic[Userdata_T]):
         self._vad = vad or None
         self._llm = llm or None
         self._tts = tts or None
+        self._stf = stf or None
         self._mcp_servers = mcp_servers or None
 
         # unrecoverable error counts, reset after agent speaking

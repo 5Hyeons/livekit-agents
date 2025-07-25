@@ -13,7 +13,7 @@ from opentelemetry import trace
 
 from livekit import rtc
 
-from .. import llm, stt, tts, utils, vad
+from .. import llm, stt, tts, stf, utils, vad
 from ..llm.tool_context import StopResponse
 from ..log import logger
 from ..metrics import (
@@ -21,6 +21,7 @@ from ..metrics import (
     LLMMetrics,
     RealtimeModelMetrics,
     STTMetrics,
+    STFMetrics,
     TTSMetrics,
     VADMetrics,
 )
@@ -53,11 +54,14 @@ from .generation import (
     _AudioOutput,
     _TextOutput,
     _TTSGenerationData,
+    _STFGenerationData,
     perform_audio_forwarding,
     perform_llm_inference,
     perform_text_forwarding,
+    perform_animation_forwarding,
     perform_tool_executions,
     perform_tts_inference,
+    perform_stf_inference,
     remove_instructions,
     update_instructions,
 )
@@ -370,6 +374,13 @@ class AgentActivity(RecognitionHooks):
                         self.tts.on("error", self._on_error)
                         self.tts.prewarm()
 
+                    if isinstance(self.stf, stf.STF):
+                        # Connect STF metrics if the STF component supports it
+                        if hasattr(self.stf, "on"):
+                            self.stf.on("metrics_collected", self._on_metrics_collected)
+                        if hasattr(self.stf, "prewarm"):
+                            self.stf.prewarm()
+
                     if isinstance(self.vad, vad.VAD):
                         self.vad.on("metrics_collected", self._on_metrics_collected)
 
@@ -610,6 +621,10 @@ class AgentActivity(RecognitionHooks):
                 self.tts.off("metrics_collected", self._on_metrics_collected)
                 self.tts.off("error", self._on_error)
 
+            if isinstance(self.stf, stf.STF):
+                if hasattr(self.stf, "off"):
+                    self.stf.off("metrics_collected", self._on_metrics_collected)
+
             if isinstance(self.vad, vad.VAD):
                 self.vad.off("metrics_collected", self._on_metrics_collected)
 
@@ -623,6 +638,13 @@ class AgentActivity(RecognitionHooks):
     def push_audio(self, frame: rtc.AudioFrame) -> None:
         if not self._started:
             return
+        
+        # 오디오 입력 로깅 (audio_logger 사용)
+        try:
+            from .audio_logger import log_audio_frame_info
+            log_audio_frame_info(frame)
+        except Exception as e:
+            logger.debug(f"오디오 로깅 오류: {e}")
 
         if (
             self._current_speech
@@ -918,10 +940,10 @@ class AgentActivity(RecognitionHooks):
 
     def _on_metrics_collected(
         self,
-        ev: STTMetrics | TTSMetrics | VADMetrics | LLMMetrics | RealtimeModelMetrics,
+        ev: STTMetrics | TTSMetrics | STFMetrics | VADMetrics | LLMMetrics | RealtimeModelMetrics,
     ) -> None:
         if (speech_handle := _SpeechHandleContextVar.get(None)) and (
-            isinstance(ev, LLMMetrics) or isinstance(ev, TTSMetrics)
+            isinstance(ev, LLMMetrics) or isinstance(ev, TTSMetrics) or isinstance(ev, STFMetrics)
         ):
             ev.speech_id = speech_handle.id
         self._session.emit("metrics_collected", MetricsCollectedEvent(metrics=ev))
@@ -1283,6 +1305,7 @@ class AgentActivity(RecognitionHooks):
             else None
         )
         audio_output = self._session.output.audio if self._session.output.audio_enabled else None
+        animation_output = self._session.output.animation if self._session.output.animation_enabled else None
 
         await speech_handle.wait_if_not_interrupted(
             [asyncio.ensure_future(speech_handle._wait_for_authorization())]
@@ -1312,8 +1335,13 @@ class AgentActivity(RecognitionHooks):
         def _on_first_frame(_: asyncio.Future[None]) -> None:
             self._session._update_agent_state("speaking")
 
+        # TTS and STF processing variables
+        tts_gen_data: _TTSGenerationData | None = None
+        stf_task: asyncio.Task | None = None
+        stf_gen_data: _STFGenerationData | None = None
+
         audio_out: _AudioOutput | None = None
-        if audio_output is not None:
+        if audio_output is not None or animation_output is not None:
             if audio is None:
                 # generate audio using TTS
                 tts_task, tts_gen_data = perform_tts_inference(
@@ -1330,18 +1358,56 @@ class AgentActivity(RecognitionHooks):
                 ):
                     text_source = timed_texts
 
-                forward_task, audio_out = perform_audio_forwarding(
-                    audio_output=audio_output, tts_output=tts_gen_data.audio_ch
-                )
-                tasks.append(forward_task)
-            else:
-                # use the provided audio
-                forward_task, audio_out = perform_audio_forwarding(
-                    audio_output=audio_output, tts_output=audio
-                )
-                tasks.append(forward_task)
+                if tts_gen_data is not None:
+                    if animation_output is not None:
+                        audio_tee = utils.aio.itertools.tee(tts_gen_data.audio_ch, 2)
+                        stf_speech_input, audio_input = audio_tee
 
-            audio_out.first_frame_fut.add_done_callback(_on_first_frame)
+                        stf_task, stf_gen_data = perform_stf_inference(
+                            node=self._agent.stf_node,
+                            input=stf_speech_input,
+                            model_settings=model_settings,
+                        )
+                        tasks.append(stf_task)
+                    
+                    if audio_output is not None:
+                        forward_task, audio_out = perform_audio_forwarding(
+                            audio_output=audio_output, tts_output=audio_input
+                        )
+                        tasks.append(forward_task)
+                        audio_out.first_frame_fut.add_done_callback(_on_first_frame)
+
+                    if animation_output is not None and stf_gen_data is not None:
+                        forward_anim_task, anim_out = perform_animation_forwarding(
+                            animation_output=animation_output, stf_output=stf_gen_data.anim_ch
+                        )
+                        tasks.append(forward_anim_task)
+                        if audio_output is None:
+                            anim_out.first_frame_fut.add_done_callback(_on_first_frame)
+            else:
+                if animation_output is not None:
+                    stf_task, stf_gen_data = perform_stf_inference(
+                        node=self._agent.stf_node,
+                        input=audio,
+                        model_settings=model_settings,
+                    )
+                    tasks.append(stf_task)
+
+                # use the provided audio
+                if audio_output is not None:
+                    forward_task, audio_out = perform_audio_forwarding(
+                        audio_output=audio_output, tts_output=audio
+                    )
+                    tasks.append(forward_task)
+                    audio_out.first_frame_fut.add_done_callback(_on_first_frame)
+
+                if animation_output is not None and stf_gen_data is not None:
+                    forward_anim_task, anim_out = perform_animation_forwarding(
+                        animation_output=animation_output, stf_output=stf_gen_data.anim_ch
+                    )
+                    tasks.append(forward_anim_task)
+                    if audio_output is None:
+                        anim_out.first_frame_fut.add_done_callback(_on_first_frame)
 
         # text output
         tr_node = self._agent.transcription_node(text_source, model_settings)
@@ -1363,6 +1429,10 @@ class AgentActivity(RecognitionHooks):
             await speech_handle.wait_if_not_interrupted(
                 [asyncio.ensure_future(audio_output.wait_for_playout())]
             )
+        if animation_output is not None:
+            # For animation output, we might not have wait_for_playout
+            # so we'll just wait for tasks to complete
+            pass
 
         if speech_handle.interrupted:
             await utils.aio.cancel_and_wait(*tasks)
@@ -1370,9 +1440,13 @@ class AgentActivity(RecognitionHooks):
             if audio_output is not None:
                 audio_output.clear_buffer()
                 await audio_output.wait_for_playout()
+            if animation_output is not None:
+                animation_output.clear_buffer()
 
         if tee is not None:
             await tee.aclose()
+        if audio_tee is not None:
+            await audio_tee.aclose()
 
         if add_to_chat_ctx:
             # use synchronized transcript when available after interruption
@@ -1414,6 +1488,8 @@ class AgentActivity(RecognitionHooks):
         instructions: str | None = None,
         _tools_messages: Sequence[llm.ChatItem] | None = None,
     ) -> None:
+        self._session._update_agent_state("thinking")
+
         from .agent import ModelSettings
 
         current_span = trace.get_current_span()
@@ -1424,6 +1500,7 @@ class AgentActivity(RecognitionHooks):
             current_span.set_attribute(trace_types.ATTR_USER_INPUT, new_message.text_content or "")
 
         audio_output = self._session.output.audio if self._session.output.audio_enabled else None
+        animation_output = self._session.output.animation if self._session.output.animation_enabled else None
         text_output = (
             self._session.output.transcription
             if self._session.output.transcription_enabled
@@ -1458,7 +1535,11 @@ class AgentActivity(RecognitionHooks):
 
         tts_task: asyncio.Task[bool] | None = None
         tts_gen_data: _TTSGenerationData | None = None
-        if audio_output is not None:
+        # STF processing variables
+        stf_task: asyncio.Task[bool] | None = None
+        stf_gen_data: _STFGenerationData | None = None
+            
+        if audio_output is not None or animation_output is not None:
             await llm_gen_data.started_fut  # make sure tts span starts after llm span
             tts_task, tts_gen_data = perform_tts_inference(
                 node=self._agent.tts_node,
@@ -1473,6 +1554,17 @@ class AgentActivity(RecognitionHooks):
                 and (timed_texts := await tts_gen_data.timed_texts_fut)
             ):
                 tr_input = timed_texts
+
+            audio_tee = utils.aio.itertools.tee(tts_gen_data.audio_ch, 2)
+            stf_speech_input, audio_input = audio_tee
+
+            if animation_output is not None:
+                stf_task, stf_gen_data = perform_stf_inference(
+                    node=self._agent.stf_node,
+                    input=stf_speech_input,
+                    model_settings=model_settings,
+                )
+                tasks.append(stf_task)
 
         wait_for_scheduled = asyncio.ensure_future(speech_handle._wait_for_scheduled())
         await speech_handle.wait_if_not_interrupted([wait_for_scheduled])
@@ -1497,6 +1589,7 @@ class AgentActivity(RecognitionHooks):
             current_span.set_attribute(trace_types.ATTR_SPEECH_INTERRUPTED, True)
             await utils.aio.cancel_and_wait(*tasks)
             await text_tee.aclose()
+            await audio_tee.aclose()
             return
 
         reply_started_at = time.time()
@@ -1515,17 +1608,27 @@ class AgentActivity(RecognitionHooks):
             self._session._update_agent_state("speaking")
 
         audio_out: _AudioOutput | None = None
-        if audio_output is not None:
-            assert tts_gen_data is not None
-            # TODO(theomonnom): should the audio be added to the chat_context too?
-            forward_task, audio_out = perform_audio_forwarding(
-                audio_output=audio_output, tts_output=tts_gen_data.audio_ch
-            )
-            tasks.append(forward_task)
+        if audio_output is None and animation_output is None:
+            if text_out is not None:
+                text_out.first_text_fut.add_done_callback(_on_first_frame)
+        else:
+            # Audio forwarding (when audio output is enabled)
+            if audio_output is not None and audio_input is not None:
+                # TODO(theomonnom): should the audio be added to the chat_context too?
+                forward_task, audio_out = perform_audio_forwarding(
+                    audio_output=audio_output, tts_output=audio_input
+                )
+                tasks.append(forward_task)
+                audio_out.first_frame_fut.add_done_callback(_on_first_frame)
 
-            audio_out.first_frame_fut.add_done_callback(_on_first_frame)
-        elif text_out is not None:
-            text_out.first_text_fut.add_done_callback(_on_first_frame)
+            if animation_output is not None and stf_gen_data is not None:
+                # Animation forwarding
+                forward_anim_task, anim_out = perform_animation_forwarding(
+                    animation_output=animation_output, stf_output=stf_gen_data.anim_ch
+                )
+                tasks.append(forward_anim_task)
+                if audio_output is None:
+                    anim_out.first_frame_fut.add_done_callback(_on_first_frame)
 
         # before executing tools, make sure we generated all the text
         # (this ensure everything is kept ordered)
@@ -1564,12 +1667,11 @@ class AgentActivity(RecognitionHooks):
 
         await speech_handle.wait_if_not_interrupted([*tasks])
 
-        # wait for the end of the playout if the audio is enabled
+        # wait for the end of the playout if the audio or animation is enabled
         if audio_output is not None:
             await speech_handle.wait_if_not_interrupted(
                 [asyncio.ensure_future(audio_output.wait_for_playout())]
             )
-
         current_span.set_attribute(trace_types.ATTR_SPEECH_INTERRUPTED, speech_handle.interrupted)
 
         # add the tools messages that triggers this reply to the chat context
@@ -1582,8 +1684,13 @@ class AgentActivity(RecognitionHooks):
         if speech_handle.interrupted:
             await utils.aio.cancel_and_wait(*tasks)
             await text_tee.aclose()
+            await audio_tee.aclose()
 
             forwarded_text = text_out.text if text_out else ""
+
+            # For animation output, clear any buffered data
+            if animation_output is not None:
+                animation_output.clear_buffer()
             # if the audio playout was enabled, clear the buffer
             if audio_output is not None:
                 audio_output.clear_buffer()
@@ -1634,6 +1741,7 @@ class AgentActivity(RecognitionHooks):
 
         speech_handle._mark_generation_done()  # mark the playout done before waiting for the tool execution  # noqa: E501
         await text_tee.aclose()
+        await audio_tee.aclose()
 
         await exe_task
 
@@ -1777,6 +1885,9 @@ class AgentActivity(RecognitionHooks):
         assert isinstance(self.llm, llm.RealtimeModel), "llm is not a realtime model"
 
         audio_output = self._session.output.audio if self._session.output.audio_enabled else None
+        animation_output = (
+            self._session.output.animation if self._session.output.animation_enabled else None
+        )
         text_output = (
             self._session.output.transcription
             if self._session.output.transcription_enabled
@@ -2094,3 +2205,7 @@ class AgentActivity(RecognitionHooks):
     @property
     def tts(self) -> tts.TTS | None:
         return self._agent.tts if is_given(self._agent.tts) else self._session.tts
+
+    @property
+    def stf(self) -> stf.STF | None:
+        return self._agent.stf if is_given(self._agent.stf) else self._session._stf

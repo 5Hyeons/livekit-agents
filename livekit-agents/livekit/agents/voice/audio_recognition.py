@@ -253,10 +253,11 @@ class AudioRecognition:
             if not transcript:
                 return
 
-            logger.debug(
-                "received user transcript",
-                extra={"user_transcript": transcript, "language": self._last_language},
-            )
+            logger.debug(f"🗣️ received user transcript: ----\"{transcript}\"---- with confidence: {confidence} 🎤")
+            # logger.debug(
+            #     "received user transcript",
+            #     extra={"user_transcript": transcript, "language": self._last_language},
+            # )
 
             self._last_final_transcript_time = time.time()
             self._audio_transcript += f" {transcript}"

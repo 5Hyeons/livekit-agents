@@ -80,6 +80,22 @@ class EOUMetrics(BaseModel):
     speech_id: str | None = None
 
 
+class STFMetrics(BaseModel):
+    type: Literal["stf_metrics"] = "stf_metrics"
+    label: str
+    request_id: str
+    timestamp: float
+    duration: float
+    """The request duration in seconds."""
+    ttff: float = 0.0
+    """Time to first frame in seconds (for streaming STF)."""
+    audio_duration: float
+    """The duration of the input audio in seconds."""
+    frames_generated: int
+    """Number of animation frames generated."""
+    speech_id: str | None = None
+
+
 class RealtimeModelMetrics(BaseModel):
     class CachedTokenDetails(BaseModel):
         audio_tokens: int
@@ -129,5 +145,6 @@ AgentMetrics = Union[
     TTSMetrics,
     VADMetrics,
     EOUMetrics,
+    STFMetrics,
     RealtimeModelMetrics,
 ]
