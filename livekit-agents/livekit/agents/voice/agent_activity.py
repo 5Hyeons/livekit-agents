@@ -640,11 +640,11 @@ class AgentActivity(RecognitionHooks):
             return
         
         # 오디오 입력 로깅 (audio_logger 사용)
-        try:
-            from .audio_logger import log_audio_frame_info
-            log_audio_frame_info(frame)
-        except Exception as e:
-            logger.debug(f"오디오 로깅 오류: {e}")
+        # try:
+        #     from .audio_logger import log_audio_frame_info
+        #     log_audio_frame_info(frame)
+        # except Exception as e:
+        #     logger.debug(f"오디오 로깅 오류: {e}")
 
         if (
             self._current_speech
@@ -1572,6 +1572,7 @@ class AgentActivity(RecognitionHooks):
             current_span.set_attribute(trace_types.ATTR_SPEECH_INTERRUPTED, True)
             await utils.aio.cancel_and_wait(*tasks, wait_for_scheduled)
             await text_tee.aclose()
+            await audio_tee.aclose()
             return
 
         if new_message is not None:
@@ -1613,7 +1614,8 @@ class AgentActivity(RecognitionHooks):
                 text_out.first_text_fut.add_done_callback(_on_first_frame)
         else:
             # Audio forwarding (when audio output is enabled)
-            if audio_output is not None and audio_input is not None:
+            if audio_output is not None:
+                assert audio_input is not None
                 # TODO(theomonnom): should the audio be added to the chat_context too?
                 forward_task, audio_out = perform_audio_forwarding(
                     audio_output=audio_output, tts_output=audio_input
@@ -1621,7 +1623,8 @@ class AgentActivity(RecognitionHooks):
                 tasks.append(forward_task)
                 audio_out.first_frame_fut.add_done_callback(_on_first_frame)
 
-            if animation_output is not None and stf_gen_data is not None:
+            if animation_output is not None:
+                assert stf_gen_data is not None
                 # Animation forwarding
                 forward_anim_task, anim_out = perform_animation_forwarding(
                     animation_output=animation_output, stf_output=stf_gen_data.anim_ch

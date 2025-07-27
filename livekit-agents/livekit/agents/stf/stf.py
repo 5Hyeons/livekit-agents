@@ -123,22 +123,23 @@ class FaceAnimatorStream:
             # Prepare audio input (1D float32 array)
             audio_input = resampled_audio.astype(np.float32)
             # Audio scalar - using default value from tm_test.py
-            audio_scalar = np.array([1.2], dtype=np.float32)
+            # audio_scalar = np.array([1.2], dtype=np.float32)
             
             # Create inference server input objects
-            input_audio = httpclient.InferInput("audio_input", audio_input.shape, "FP32")
-            input_scalar = httpclient.InferInput("audio_scalar", audio_scalar.shape, "FP32")
+            input_audio = httpclient.InferInput("audio_chunk", audio_input.shape, "FP32")
+            # input_scalar = httpclient.InferInput("audio_scalar", audio_scalar.shape, "FP32")
             input_audio.set_data_from_numpy(audio_input)
-            input_scalar.set_data_from_numpy(audio_scalar)
+            # input_scalar.set_data_from_numpy(audio_scalar)
             
             # Send inference request
             response = self._face_animator._client.infer(
                 self._face_animator._model_name,
-                inputs=[input_audio, input_scalar],
+                # inputs=[input_audio, input_scalar],
+                inputs=[input_audio],
             )
             
             # Get output - shape is (1, num_frames, 52)
-            output = response.as_numpy("anim_output")
+            output = response.as_numpy("face_animation")
             return output
             
         except Exception as e:
@@ -421,8 +422,8 @@ class FaceAnimator(STF, rtc.EventEmitter):
         self,
         *,
         # Server configuration
-        server_url: str = "localhost:8300",
-        model_name: str = "ensemble_model",
+        server_url: str = "localhost:8401",
+        model_name: str = "ensemble_face",
         
         # Common parameters
         frame_rate: int = 60,
