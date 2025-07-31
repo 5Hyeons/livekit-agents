@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 from livekit import rtc
 from livekit.agents.voice.agent_session import AgentSession
+from user_database import UserDatabase
 
 if TYPE_CHECKING:
     pass
@@ -20,19 +21,21 @@ class RPCHandlers:
 
     This class provides handlers for:
     - Agent interruption
-    - Attention checking for inactive users
+    - Attention checking for inactive users  
+    - Text input from clients
+    - Chat history management
     """
 
-    def __init__(self, session: AgentSession, user_language: str):
+    def __init__(self, session: AgentSession, db: UserDatabase):
         """
         Initialize RPC handlers.
 
         Args:
             session: AgentSession instance for communication
-            user_language: User's preferred language for messages
+            db: UserDatabase instance for data operations
         """
         self.session = session
-        self.user_language = user_language
+        self.db = db
 
     def create_interrupt_handler(self):
         """
@@ -114,6 +117,37 @@ class RPCHandlers:
                 return json.dumps({"status": "error", "message": str(e)})
         
         return send_text_input
+    
+    def create_clear_chat_history_handler(self):
+        """
+        Create chat history clearing RPC handler.
+        
+        Returns:
+            Async function to handle chat history clearing requests
+        """
+        
+        async def clear_chat_history(data: rtc.RpcInvocationData) -> str:
+            """Handle client request to clear chat history."""
+            logger.info(f"RPC 'clear_chat_history' called by: {data.caller_identity}")
+            
+            try:
+                import json
+                
+                # Clear chat history for the user
+                deleted_count = self.db.clear_chat_history()
+                
+                return json.dumps({
+                    "status": "success", 
+                    "deleted_count": deleted_count,
+                    "message": f"{deleted_count}개의 채팅 기록이 삭제되었습니다"
+                })
+                
+            except Exception as e:
+                logger.error(f"Error clearing chat history: {e}")
+                import json
+                return json.dumps({"status": "error", "message": str(e)})
+        
+        return clear_chat_history
 
     def register_all_methods(self, local_participant: rtc.LocalParticipant):
         """
@@ -130,5 +164,8 @@ class RPCHandlers:
         local_participant.register_rpc_method(
             "send_text_input", self.create_send_text_input_handler()
         )
+        local_participant.register_rpc_method(
+            "clear_chat_history", self.create_clear_chat_history_handler()
+        )
 
-        logger.info("RPC methods registered: interrupt_agent, check_attention, send_text_input")
+        logger.info("RPC methods registered: interrupt_agent, check_attention, send_text_input, clear_chat_history")

@@ -43,7 +43,7 @@ def prewarm(proc: JobProcess):
         proc: Job process instance
     """
     # Load VAD model with optimized threshold
-    proc.userdata["vad"] = silero.VAD.load(activation_threshold=0.6)
+    proc.userdata["vad"] = silero.VAD.load(activation_threshold=0.4)
     logger.info("VAD model prewarmed successfully")
 
 
@@ -83,7 +83,10 @@ async def entrypoint(ctx: JobContext):
     room_output_options = setup_data['room_output_options']
     
     # Create agent session
-    session = AgentSession(vad=ctx.proc.userdata["vad"])
+    session = AgentSession(
+        vad=ctx.proc.userdata["vad"],
+        # preemptive_generation=True
+        )
     
     # Create usage collector for metrics
     usage_collector = metrics.UsageCollector()
@@ -120,7 +123,7 @@ async def entrypoint(ctx: JobContext):
     )
     
     # Create and register RPC handlers
-    rpc_handlers = RPCHandlers(session, user_language)
+    rpc_handlers = RPCHandlers(session, db)
     rpc_handlers.register_all_methods(ctx.room.local_participant)
     
     logger.info("Wallmate agent started successfully")

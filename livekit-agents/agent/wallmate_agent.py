@@ -3,9 +3,6 @@ WallmateAgent class for LiveKit voice AI agents with face animation support.
 """
 
 import logging
-import os
-import sys
-from typing import Any
 
 from config.base_instructions import create_base_instructions
 from config.voice_config import ElevenLabsConfig
@@ -14,7 +11,7 @@ from user_database import UserData, UserDatabase
 from livekit.agents.llm import function_tool
 from livekit.agents.stf import FaceAnimator, OutputMode
 from livekit.agents.voice.agent import Agent
-from livekit.plugins import deepgram, openai
+from livekit.plugins import deepgram, openai, cartesia
 
 logger = logging.getLogger("wallmate-agent")
 
@@ -53,16 +50,12 @@ class WallmateAgent(Agent):
         self.db = db
         self.user_language = user_language
         self.custom_persona = custom_persona
-        self._preloaded_message_count = 120  # Number of messages to load from history
+        self._preloaded_message_count = 0  # Number of messages to load from history
 
         if self.custom_persona:
             logger.info(f"Use Custom persona: {self.custom_persona}")
 
-        # Initialize reactivity tracker for performance monitoring
-        sys.path.append(os.path.dirname(__file__))
-        from streaming_reactivity_tracker import StreamingReactivityTracker
-
-        self.reactivity_tracker = StreamingReactivityTracker()
+        # Performance tracking is now handled in event_handlers.py
 
         # Create base instructions with persona
         base_instructions = create_base_instructions(
@@ -87,6 +80,7 @@ class WallmateAgent(Agent):
             stt=deepgram.STT(model="nova-2-general", language=self.user_language),
             llm=openai.LLM(model="gpt-4o"),
             tts=elevenlabs_config.create_tts(),
+            # tts=cartesia.TTS(model="sonic-turbo", language="ko", voice='0d23306e-f559-4db2-a65d-0729c0fe6f0f', speed='fast'),
             stf=FaceAnimator(chunk_duration_sec=0.5, output_mode=OutputMode.ANIMATION_WITH_AUDIO),
         )
 
@@ -172,28 +166,3 @@ class WallmateAgent(Agent):
         # Return system context for the agent to acknowledge
         return f"[SYSTEM_CONTEXT: User introduced themselves as '{name}'. Acknowledge this naturally and continue the conversation.]"
 
-    def _update_metrics_data(self, metrics_obj):
-        """
-        Update reactivity metrics with streaming-optimized tracking.
-
-        Args:
-            metrics_obj: Metrics object from LiveKit agents framework
-        """
-        # Pass all metrics to streaming reactivity tracker
-        # Optimized for streaming pipeline TTFT/TTFB measurement
-        self.reactivity_tracker.record_metrics(metrics_obj)
-
-    def _log_performance_summary(self):
-        """Log performance summary at session end."""
-        current_metrics = self.reactivity_tracker.get_current_metrics()
-        if any(v is not None for v in current_metrics.values()):
-            logger.info(f"Final reactivity metrics: {current_metrics}")
-
-    def get_performance_stats(self) -> dict[str, Any]:
-        """
-        Get current performance statistics.
-
-        Returns:
-            Dictionary containing current reactivity metrics
-        """
-        return self.reactivity_tracker.get_current_metrics()

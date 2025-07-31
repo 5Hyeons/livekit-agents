@@ -284,3 +284,14 @@ class UserDatabase:
             'last_seen': user_data.last_seen.isoformat() if user_data.last_seen else None,
             'total_messages': chat_count
         }
+    
+    def clear_chat_history(self) -> int:
+        """현재 participant의 모든 채팅 기록 삭제"""
+        with self.get_connection() as conn:
+            cursor = conn.execute(
+                "DELETE FROM chat_history WHERE participant_id = ?",
+                (self.participant_id,)
+            )
+            deleted_count = cursor.rowcount
+            logger.info(f"사용자 {self.participant_id}의 채팅 기록 {deleted_count}개 삭제")
+            return deleted_count
