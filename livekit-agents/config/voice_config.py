@@ -46,14 +46,37 @@ class ElevenLabsConfig:
                     speed=1.0,
                 ),
             ),
+            # Lilirose
             "FEMALE_2": cls(
-                voice_id="uyVNoMrnUku1dZyVEXwD",
-                model="eleven_turbo_v2_5",
+                voice_id="v1IIiVAN4yJaGycxWmjU",
+                model="eleven_flash_v2_5",
+                voice_settings=VoiceSettings(
+                    stability=0.5,
+                    similarity_boost=0.4,
+                    style=0.0,
+                    speed=1.2,
+                ),
+            ),
+            # Morioki
+            "FEMALE_3": cls(
+                voice_id="8EkOjt4xTPGMclNlh1pk",
+                model="eleven_flash_v2_5",
+                voice_settings=VoiceSettings(
+                    stability=0.65,
+                    similarity_boost=0.5,
+                    style=0.0,
+                    speed=1.1,
+                ),
+            ),
+            # Ana-Rita 
+            "FEMALE_4": cls(
+                voice_id="wJqPPQ618aTW29mptyoc",
+                model="eleven_flash_v2_5",
                 voice_settings=VoiceSettings(
                     stability=0.5,
                     similarity_boost=0.75,
                     style=0.0,
-                    speed=1.0,
+                    speed=1.1,
                 ),
             ),
             "MALE_1": cls(
@@ -66,14 +89,37 @@ class ElevenLabsConfig:
                     speed=1.07,
                 ),
             ),
+            # David martin
             "MALE_2": cls(
-                voice_id="YBRudLRm83BV5Mazcr42",
+                voice_id="y6WtESLj18d0diFRruBs",
+                model="eleven_flash_v2_5",
+                voice_settings=VoiceSettings(
+                    stability=0.5,
+                    similarity_boost=0.75,
+                    style=0.0,
+                    speed=1.1,
+                ),
+            ),
+            # Hinata
+            "MALE_3": cls(
+                voice_id="j210dv0vWm7fCknyQpbA",
+                model="eleven_flash_v2_5",
+                voice_settings=VoiceSettings(
+                    stability=0.5,
+                    similarity_boost=0.35,
+                    style=0.0,
+                    speed=1.05,
+                ),
+            ),
+            # Hadou
+            "MALE_4": cls(
+                voice_id="LIisRj2veIKEBdr6KZ5y",
                 model="eleven_flash_v2_5",
                 voice_settings=VoiceSettings(
                     stability=0.7,
-                    similarity_boost=0.75,
+                    similarity_boost=0.85,
                     style=0.0,
-                    speed=1.07,
+                    speed=1.00,
                 ),
             ),
         }
@@ -95,5 +141,6 @@ class ElevenLabsConfig:
                 style=self.voice_settings.style,
                 speed=self.voice_settings.speed,
             ),
-            encoding="mp3_44100_32",
+            encoding="mp3_22050_32",
+            auto_mode=True,
         )
