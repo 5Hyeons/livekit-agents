@@ -58,6 +58,17 @@ class SessionEventHandlers:
         self.db = db
         self.user_data = user_data
         self.usage_collector = usage_collector
+        
+        # E2E metrics tracking
+        self.last_eou_time = None  # Track user speech end time
+        
+        self.eou_ms = None
+        self.stt_ms = None
+        self.llm_ttft = None  # LLM Time to First Token
+        self.tts_ttfb = None  # TTS Time to First Byte
+        self.stf_ttff = None  # STF Time to First Frame
+        self.e2e_latency = None  # E2E Response Time
+        self.metrics_logged = False  # Prevent duplicate logging
 
     def create_agent_state_handler(self):
         """
@@ -70,8 +81,16 @@ class SessionEventHandlers:
         def on_agent_state_changed(ev):
             """Handle agent state change events - track speaking state."""
             if ev.new_state == "speaking":
-                # Record when agent starts speaking (correct timing)
-                self.agent.reactivity_tracker.record_agent_utterance_start()
+                # Calculate E2E metrics directly when agent starts speaking
+                event_timestamp = getattr(ev, 'created_at', None) or time.time()
+                if self.last_eou_time is not None:
+                    e2e_latency = event_timestamp - self.last_eou_time
+                    if e2e_latency >= 0:  # Valid E2E measurement
+                        self.e2e_latency = e2e_latency * 1000  # Store in ms
+                        # Reset for next measurement
+                        self.last_eou_time = None
+                    else:
+                        logger.warning(f"Invalid E2E latency: {e2e_latency * 1000:.1f}ms")
 
             logger.info(f"Agent state changed: {ev.old_state} -> {ev.new_state}")
 
@@ -115,11 +134,6 @@ class SessionEventHandlers:
         """
 
         def on_user_state_changed(ev):
-            """Handle user state change events - track speech end."""
-            if ev.old_state == "speaking" and ev.new_state == "listening":
-                # User finished speaking - start reactivity measurement
-                self.agent.reactivity_tracker.record_user_speech_end()
-
             logger.info(f"User state changed: {ev.old_state} -> {ev.new_state}")
 
         return on_user_state_changed
@@ -133,17 +147,99 @@ class SessionEventHandlers:
         """
 
         def on_metrics_collected(ev: MetricsCollectedEvent):
-            """Handle metrics collection events."""
+            """Handle metrics collection events with comprehensive logging."""
             # Log detailed metrics
             metrics.log_metrics(ev.metrics)
 
             # Collect usage statistics
             self.usage_collector.collect(ev.metrics)
 
-            # Update agent's metrics data
-            self.agent._update_metrics_data(ev.metrics)
+            # Handle different types of metrics directly
+            if isinstance(ev.metrics, metrics.EOUMetrics):
+                self._handle_eou_metrics(ev.metrics)
+            elif isinstance(ev.metrics, metrics.LLMMetrics):
+                self._handle_llm_metrics(ev.metrics)
+            elif isinstance(ev.metrics, metrics.TTSMetrics):
+                self._handle_tts_metrics(ev.metrics)
+            elif isinstance(ev.metrics, metrics.STFMetrics):
+                self._handle_stf_metrics(ev.metrics)
+            elif isinstance(ev.metrics, metrics.VADMetrics):
+                self._handle_vad_metrics(ev.metrics)
+            elif isinstance(ev.metrics, metrics.STTMetrics):
+                self._handle_stt_metrics(ev.metrics)
 
         return on_metrics_collected
+
+    def _handle_eou_metrics(self, eou_metrics: metrics.EOUMetrics):
+        """Handle End-of-Utterance metrics."""
+        # Store for E2E calculation
+        self.last_eou_time = eou_metrics.last_speaking_time
+        
+        # Reset metrics collection for new cycle
+        self.llm_ttft = None
+        self.tts_ttfb = None
+        self.stf_ttff = None
+        self.e2e_latency = None
+        self.metrics_logged = False
+        
+        # Log EOU components
+        self.eou_ms = eou_metrics.end_of_utterance_delay * 1000
+        self.stt_ms = eou_metrics.transcription_delay * 1000
+        logger.debug(f"📝 EOU: {self.eou_ms:.0f}ms, STT: {self.stt_ms:.0f}ms")
+
+    def _handle_llm_metrics(self, llm_metrics: metrics.LLMMetrics):
+        """Handle LLM metrics."""
+        self.llm_ttft = llm_metrics.ttft * 1000  # Convert to ms
+        logger.debug(f"🧠 LLM TTFT: {self.llm_ttft:.0f}ms")
+
+    def _handle_tts_metrics(self, tts_metrics: metrics.TTSMetrics):
+        """Handle TTS metrics."""
+        self.tts_ttfb = tts_metrics.ttfb * 1000  # Convert to ms
+        logger.debug(f"🔊 TTS TTFB: {self.tts_ttfb:.0f}ms")
+
+    def _handle_stf_metrics(self, stf_metrics: metrics.STFMetrics):
+        """Handle STF metrics and log complete pipeline."""
+        # Record STF timing
+        if hasattr(stf_metrics, 'ttff') and stf_metrics.ttff > 0:
+            self.stf_ttff = stf_metrics.ttff * 1000  # Convert to ms
+            logger.debug(f"🎭 STF TTFF: {self.stf_ttff:.0f}ms (streaming)")
+        else:
+            self.stf_ttff = stf_metrics.duration * 1000  # Fallback
+            logger.debug(f"🎭 STF duration: {self.stf_ttff:.0f}ms (legacy)")
+        
+        # Log complete metrics once (STF is typically the last metric)
+        if not self.metrics_logged:
+            self._log_complete_metrics()
+            self.metrics_logged = True
+
+    def _handle_vad_metrics(self, vad_metrics: metrics.VADMetrics):
+        """Handle VAD metrics (silent - too noisy for logs)."""
+        pass
+
+    def _handle_stt_metrics(self, stt_metrics: metrics.STTMetrics):
+        """Handle STT metrics (silent - too noisy for logs)."""
+        pass
+
+    def _log_complete_metrics(self):
+        """Log complete reactivity breakdown with E2E."""
+        parts = []
+        
+        # Add E2E as the first metric if available
+        if self.e2e_latency is not None:
+            parts.append(f"E2E: {self.e2e_latency:.0f}ms")
+        
+        # Streaming latencies
+        if self.stt_ms is not None:
+            parts.append(f"STT: {self.stt_ms:.0f}ms")
+        if self.llm_ttft is not None:
+            parts.append(f"LLM: {self.llm_ttft:.0f}ms")
+        if self.tts_ttfb is not None:
+            parts.append(f"TTS: {self.tts_ttfb:.0f}ms")
+        if self.stf_ttff is not None:
+            parts.append(f"STF: {self.stf_ttff:.0f}ms")
+        
+        if parts:
+            logger.info(f"🚀 Complete Metrics: {' | '.join(parts)}")
 
     def create_session_close_handler(self):
         """
@@ -160,8 +256,7 @@ class SessionEventHandlers:
             summary = self.usage_collector.get_summary()
             logger.info(f"Session ended - Final usage statistics: {summary}")
 
-            # Log agent's performance summary
-            self.agent._log_performance_summary()
+            # Performance metrics were logged during execution
 
             # Extract chat messages from agent context (only new messages from current session)
             chat_messages = []
