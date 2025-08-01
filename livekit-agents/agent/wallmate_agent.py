@@ -11,7 +11,7 @@ from user_database import UserData, UserDatabase
 from livekit.agents.llm import function_tool
 from livekit.agents.stf import FaceAnimator, OutputMode
 from livekit.agents.voice.agent import Agent
-from livekit.plugins import deepgram, openai, cartesia
+from livekit.plugins import deepgram, openai, cartesia, anthropic
 
 logger = logging.getLogger("wallmate-agent")
 
@@ -50,7 +50,7 @@ class WallmateAgent(Agent):
         self.db = db
         self.user_language = user_language
         self.custom_persona = custom_persona
-        self._preloaded_message_count = 0  # Number of messages to load from history
+        self._preloaded_message_count = 120  # Number of messages to load from history
 
         if self.custom_persona:
             logger.info(f"Use Custom persona: {self.custom_persona}")
@@ -78,7 +78,12 @@ class WallmateAgent(Agent):
             instructions=base_instructions,
             chat_ctx=chat_ctx,
             stt=deepgram.STT(model="nova-2-general", language=self.user_language),
-            llm=openai.LLM(model="gpt-4o"),
+            # llm=openai.LLM(model="gpt-4o"),
+            llm=anthropic.LLM(
+                model="claude-4-sonnet-20250514",
+                caching="ephemeral",
+                max_tokens=256,
+            ),
             tts=elevenlabs_config.create_tts(),
             # tts=cartesia.TTS(model="sonic-turbo", language="ko", voice='0d23306e-f559-4db2-a65d-0729c0fe6f0f', speed='fast'),
             stf=FaceAnimator(chunk_duration_sec=0.5, output_mode=OutputMode.ANIMATION_WITH_AUDIO),
