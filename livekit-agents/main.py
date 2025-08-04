@@ -29,6 +29,11 @@ from agent.wallmate_agent import WallmateAgent
 from core.session_setup import SessionSetup
 from handlers.event_handlers import SessionEventHandlers
 from handlers.rpc_handlers import RPCHandlers
+from config.session_config import (
+    VAD_ACTIVATION_THRESHOLD,
+    AGENT_PREEMPTIVE_GENERATION,
+    METRICS_COLLECTION_ENABLED,
+)
 
 # Load environment variables
 load_dotenv()
@@ -43,8 +48,8 @@ def prewarm(proc: JobProcess):
         proc: Job process instance
     """
     # Load VAD model with optimized threshold
-    proc.userdata["vad"] = silero.VAD.load(activation_threshold=0.4)
-    logger.info("VAD model prewarmed successfully")
+    proc.userdata["vad"] = silero.VAD.load(activation_threshold=VAD_ACTIVATION_THRESHOLD)
+    logger.info(f"VAD model prewarmed successfully (threshold: {VAD_ACTIVATION_THRESHOLD})")
 
 
 async def entrypoint(ctx: JobContext):
@@ -85,20 +90,21 @@ async def entrypoint(ctx: JobContext):
     # Create agent session
     session = AgentSession(
         vad=ctx.proc.userdata["vad"],
-        # preemptive_generation=True
+        preemptive_generation=AGENT_PREEMPTIVE_GENERATION,
         )
     
     # Create usage collector for metrics
-    usage_collector = metrics.UsageCollector()
+    usage_collector = metrics.UsageCollector() if METRICS_COLLECTION_ENABLED else None
     
     # Create agent instance
     agent = WallmateAgent(user_data, db, user_language, custom_persona, voice_name)
     
     # Create event handlers
     event_handlers = SessionEventHandlers(
+        ctx=ctx,
         agent=agent,
+        session=session,
         participant=participant,
-        ctx_room=ctx.room,
         db=db,
         user_data=user_data,
         usage_collector=usage_collector
@@ -134,5 +140,7 @@ if __name__ == "__main__":
         WorkerOptions(
             entrypoint_fnc=entrypoint,
             prewarm_fnc=prewarm,
+            shutdown_process_timeout= 10.0,
+            drain_timeout=15.0,
         ),
     )

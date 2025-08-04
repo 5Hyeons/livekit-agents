@@ -191,6 +191,7 @@ class CloseReason(str, Enum):
     PARTICIPANT_DISCONNECTED = "participant_disconnected"
     USER_INITIATED = "user_initiated"
     TASK_COMPLETED = "task_completed"
+    USER_INACTIVITY = "user_inactivity"
 
 
 class CloseEvent(BaseModel):

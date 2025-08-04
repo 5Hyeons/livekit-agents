@@ -11,6 +11,11 @@ from livekit.agents.voice.room_io.room_io import RoomInputOptions, RoomOutputOpt
 
 from user_database import UserDatabase, UserData
 from config.language_config import SUPPORTED_LANGUAGES, DEFAULT_LANGUAGE, validate_language
+from config.session_config import (
+    ROOM_INPUT_DEFAULTS,
+    ROOM_OUTPUT_DEFAULTS,
+    DEFAULT_VOICE_NAME,
+)
 
 logger = logging.getLogger("session-setup")
 
@@ -41,7 +46,7 @@ class SessionSetup:
         user_language = DEFAULT_LANGUAGE
         agent_language = DEFAULT_LANGUAGE
         custom_persona = ""
-        voice_name = "FEMALE_1"
+        voice_name = DEFAULT_VOICE_NAME
         
         logger.info(f"Parsing participant metadata: {participant.metadata}")
         
@@ -138,18 +143,13 @@ class SessionSetup:
         """
         # Input options - audio only for STT
         room_input_options = RoomInputOptions(
-            audio_enabled=True,
-            video_enabled=False,
-            text_enabled=False,
+            **ROOM_INPUT_DEFAULTS,
             participant_identity=participant.identity,
         )
         
         # Output options - animation enabled for face animation
         room_output_options = RoomOutputOptions(
-            audio_enabled=False,           # Audio handled by animation stream
-            transcription_enabled=False,   # Text transcription disabled
-            animation_enabled=True,        # Face animation data enabled
-            sync_transcription=False,
+            **ROOM_OUTPUT_DEFAULTS,
         )
         
         logger.info(f"Animation data streaming enabled for: {participant.identity}")

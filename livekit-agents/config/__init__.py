@@ -9,6 +9,7 @@ from .language_config import (
     is_supported_language,
     validate_language
 )
+from .session_config import USER_INACTIVITY_TIMEOUT_SECONDS
 
 __all__ = [
     'VoiceSettings',
@@ -18,5 +19,6 @@ __all__ = [
     'get_language_name',
     'map_language_to_deepgram',
     'is_supported_language',
-    'validate_language'
+    'validate_language',
+    'USER_INACTIVITY_TIMEOUT_SECONDS'
 ]

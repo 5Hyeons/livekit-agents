@@ -93,6 +93,7 @@ class RPCHandlers:
             logger.info(f"Text input payload: {data.payload}")
             
             try:
+                self.session._update_user_state("listening")  # Update user state to listening
                 import json
                 
                 # Parse the payload
@@ -133,13 +134,43 @@ class RPCHandlers:
             try:
                 import json
                 
-                # Clear chat history for the user
+                # Clear chat history from database
                 deleted_count = self.db.clear_chat_history()
+                
+                # Clear current session's chat context while preserving system message
+                try:
+                    agent = self.session.current_agent
+                    current_ctx = agent.chat_ctx
+                    
+                    # Find system message
+                    system_message = None
+                    for item in current_ctx.items:
+                        if (item.type == "message" and 
+                            hasattr(item, 'role') and 
+                            item.role == "system"):
+                            system_message = item
+                            break
+                    
+                    # Create new context with only system message
+                    from livekit.agents.llm import ChatContext
+                    new_ctx = ChatContext.empty()
+                    if system_message:
+                        new_ctx.items.append(system_message)
+                    
+                    # Update agent's chat context
+                    await agent.update_chat_ctx(new_ctx)
+                    
+                    logger.info("Successfully reset session chat context")
+                    context_message = " 현재 세션의 대화 컨텍스트도 초기화되었습니다."
+                    
+                except Exception as ctx_error:
+                    logger.warning(f"Failed to reset session chat context: {ctx_error}")
+                    context_message = " (현재 세션의 컨텍스트 초기화는 실패했습니다)"
                 
                 return json.dumps({
                     "status": "success", 
                     "deleted_count": deleted_count,
-                    "message": f"{deleted_count}개의 채팅 기록이 삭제되었습니다"
+                    "message": f"{deleted_count}개의 채팅 기록이 삭제되었습니다{context_message}"
                 })
                 
             except Exception as e:

@@ -9,14 +9,13 @@ import time
 from datetime import datetime
 from typing import TYPE_CHECKING
 
+from config.session_config import USER_INACTIVITY_TIMEOUT_SECONDS
 from user_database import ChatMessage, UserData, UserDatabase
 
 from livekit import rtc
-from livekit.agents import llm, metrics
-from livekit.agents.voice import MetricsCollectedEvent
+from livekit.agents import JobContext, llm, metrics
+from livekit.agents.voice import Agent, AgentSession, MetricsCollectedEvent, CloseEvent, CloseReason
 
-if TYPE_CHECKING:
-    from agent.wallmate_agent import WallmateAgent
 
 logger = logging.getLogger("event-handlers")
 
@@ -34,30 +33,38 @@ class SessionEventHandlers:
 
     def __init__(
         self,
-        agent: "WallmateAgent",
+        ctx: JobContext,
+        session: AgentSession,
+        agent: Agent,
         participant: rtc.RemoteParticipant,
-        ctx_room: rtc.Room,
         db: UserDatabase,
         user_data: UserData,
-        usage_collector: metrics.UsageCollector,
+        usage_collector: metrics.UsageCollector = None,
     ):
         """
         Initialize event handlers with required dependencies.
 
         Args:
-            agent: WallmateAgent instance
+            agent: Agent instance
             participant: Remote participant
-            ctx_room: Room context
+            ctx: Job context
             db: Database instance
             user_data: User data
             usage_collector: Metrics collector
         """
         self.agent = agent
         self.participant = participant
-        self.ctx_room = ctx_room
+        self.ctx = ctx
         self.db = db
         self.user_data = user_data
         self.usage_collector = usage_collector
+        
+        # Inactivity timeout tracking
+        self.inactivity_task = None
+        self.session = session
+        
+        # Session state tracking
+        self._session_closing = False  # Prevent duplicate session close handling
         
         # E2E metrics tracking
         self.last_eou_time = None  # Track user speech end time
@@ -102,7 +109,7 @@ class SessionEventHandlers:
 
                 # Execute async RPC from sync handler
                 task = asyncio.create_task(
-                    self.ctx_room.local_participant.perform_rpc(
+                    self.ctx.room.local_participant.perform_rpc(
                         destination_identity=self.participant.identity,
                         method="agent_state_changed",
                         payload=payload,
@@ -133,8 +140,51 @@ class SessionEventHandlers:
             Event handler function for user state changes
         """
 
+        async def inactive_user_timeout():
+            """Handle user inactivity timeout after configured seconds."""
+            if USER_INACTIVITY_TIMEOUT_SECONDS is None:
+                return
+            
+            try:
+                # Wait for the configured timeout period
+                await asyncio.sleep(USER_INACTIVITY_TIMEOUT_SECONDS)
+                
+                await self.session.generate_reply(user_input="[SYSTEM_CONTEXT: User inactive for too long, So you are going to close the session. say goodbye to the user.]")
+                await asyncio.sleep(4)  # Allow time for goodbye message to be sent
+
+                # Use _close_soon with USER_INACTIVITY reason
+                logger.info(f"User inactive for {USER_INACTIVITY_TIMEOUT_SECONDS} seconds, closing session")
+                self.session._close_soon(reason=CloseReason.USER_INACTIVITY, drain=True)
+                
+            except asyncio.CancelledError:
+                logger.debug("User inactivity timeout task cancelled")
+                raise
+
         def on_user_state_changed(ev):
             logger.info(f"User state changed: {ev.old_state} -> {ev.new_state}")
+            
+            # Handle inactivity timeout logic
+            if ev.new_state == "away":
+                # User became inactive, start timeout timer
+                if USER_INACTIVITY_TIMEOUT_SECONDS is not None:
+                    # Cancel existing task if running
+                    if self.inactivity_task is not None:
+                        self.inactivity_task.cancel()
+                    
+                    self.inactivity_task = asyncio.create_task(inactive_user_timeout())
+                    
+                    # Add cleanup callback to prevent memory leaks
+                    def cleanup_task(task):
+                        self.inactivity_task = None
+                    self.inactivity_task.add_done_callback(cleanup_task)
+                    
+                    logger.debug(f"Started inactivity timer for {USER_INACTIVITY_TIMEOUT_SECONDS} seconds")
+            else:
+                # User became active, cancel timeout timer if running
+                if self.inactivity_task is not None:
+                    self.inactivity_task.cancel()
+                    self.inactivity_task = None
+                    logger.debug("Cancelled inactivity timer - user became active")
 
         return on_user_state_changed
 
@@ -152,7 +202,8 @@ class SessionEventHandlers:
             metrics.log_metrics(ev.metrics)
 
             # Collect usage statistics
-            self.usage_collector.collect(ev.metrics)
+            if self.usage_collector:
+                self.usage_collector.collect(ev.metrics)
 
             # Handle different types of metrics directly
             if isinstance(ev.metrics, metrics.EOUMetrics):
@@ -170,76 +221,6 @@ class SessionEventHandlers:
 
         return on_metrics_collected
 
-    def _handle_eou_metrics(self, eou_metrics: metrics.EOUMetrics):
-        """Handle End-of-Utterance metrics."""
-        # Store for E2E calculation
-        self.last_eou_time = eou_metrics.last_speaking_time
-        
-        # Reset metrics collection for new cycle
-        self.llm_ttft = None
-        self.tts_ttfb = None
-        self.stf_ttff = None
-        self.e2e_latency = None
-        self.metrics_logged = False
-        
-        # Log EOU components
-        self.eou_ms = eou_metrics.end_of_utterance_delay * 1000
-        self.stt_ms = eou_metrics.transcription_delay * 1000
-        logger.debug(f"📝 EOU: {self.eou_ms:.0f}ms, STT: {self.stt_ms:.0f}ms")
-
-    def _handle_llm_metrics(self, llm_metrics: metrics.LLMMetrics):
-        """Handle LLM metrics."""
-        self.llm_ttft = llm_metrics.ttft * 1000  # Convert to ms
-        logger.debug(f"🧠 LLM TTFT: {self.llm_ttft:.0f}ms")
-
-    def _handle_tts_metrics(self, tts_metrics: metrics.TTSMetrics):
-        """Handle TTS metrics."""
-        self.tts_ttfb = tts_metrics.ttfb * 1000  # Convert to ms
-        logger.debug(f"🔊 TTS TTFB: {self.tts_ttfb:.0f}ms")
-
-    def _handle_stf_metrics(self, stf_metrics: metrics.STFMetrics):
-        """Handle STF metrics and log complete pipeline."""
-        # Record STF timing
-        if hasattr(stf_metrics, 'ttff') and stf_metrics.ttff > 0:
-            self.stf_ttff = stf_metrics.ttff * 1000  # Convert to ms
-            logger.debug(f"🎭 STF TTFF: {self.stf_ttff:.0f}ms (streaming)")
-        else:
-            self.stf_ttff = stf_metrics.duration * 1000  # Fallback
-            logger.debug(f"🎭 STF duration: {self.stf_ttff:.0f}ms (legacy)")
-        
-        # Log complete metrics once (STF is typically the last metric)
-        if not self.metrics_logged:
-            self._log_complete_metrics()
-            self.metrics_logged = True
-
-    def _handle_vad_metrics(self, vad_metrics: metrics.VADMetrics):
-        """Handle VAD metrics (silent - too noisy for logs)."""
-        pass
-
-    def _handle_stt_metrics(self, stt_metrics: metrics.STTMetrics):
-        """Handle STT metrics (silent - too noisy for logs)."""
-        pass
-
-    def _log_complete_metrics(self):
-        """Log complete reactivity breakdown with E2E."""
-        parts = []
-        
-        # Add E2E as the first metric if available
-        if self.e2e_latency is not None:
-            parts.append(f"E2E: {self.e2e_latency:.0f}ms")
-        
-        # Streaming latencies
-        if self.stt_ms is not None:
-            parts.append(f"STT: {self.stt_ms:.0f}ms")
-        if self.llm_ttft is not None:
-            parts.append(f"LLM: {self.llm_ttft:.0f}ms")
-        if self.tts_ttfb is not None:
-            parts.append(f"TTS: {self.tts_ttfb:.0f}ms")
-        if self.stf_ttff is not None:
-            parts.append(f"STF: {self.stf_ttff:.0f}ms")
-        
-        if parts:
-            logger.info(f"🚀 Complete Metrics: {' | '.join(parts)}")
 
     def create_session_close_handler(self):
         """
@@ -249,12 +230,32 @@ class SessionEventHandlers:
             Event handler function for session closure
         """
 
-        def on_session_close():
-            """Handle session closure - save chat history and cleanup."""
-
+        def on_session_close(ev: CloseEvent):
+            """Handle session closure - save chat history, send RPC, and cleanup."""
+            
+            # Clean up inactivity task
+            if self.inactivity_task is not None:
+                self.inactivity_task.cancel()
+                self.inactivity_task = None
+            
+            # Prevent duplicate session close handling
+            if self._session_closing:
+                logger.debug(f"Session already closing, ignoring close event: {ev.reason.value}")
+                return
+                
+            # Additional connection check for safety
+            if not self.ctx._connected:
+                logger.debug(f"Context not connected, skipping session close handling: {ev.reason.value}")
+                return
+                
+            # Mark session as closing
+            self._session_closing = True
+            logger.info(f"Session closing: {ev.reason.value}")
+            
             # Log final usage statistics
-            summary = self.usage_collector.get_summary()
-            logger.info(f"Session ended - Final usage statistics: {summary}")
+            if self.usage_collector:
+                summary = self.usage_collector.get_summary()
+                logger.info(f"Session ended - Final usage statistics: {summary}")
 
             # Performance metrics were logged during execution
 
@@ -306,5 +307,124 @@ class SessionEventHandlers:
             # Log user summary
             user_summary = self.db.get_user_summary(self.participant.identity)
             logger.info(f"User summary: {user_summary}")
+            
+            # Prepare close reason details
+            close_details = {
+                "reason": ev.reason.value,
+                "timestamp": time.time()
+            }
+            
+            # Add specific details based on close reason
+            if ev.reason == CloseReason.USER_INACTIVITY:
+                close_details["timeout_seconds"] = USER_INACTIVITY_TIMEOUT_SECONDS
+                close_details["detail"] = f"user_inactive_for_{USER_INACTIVITY_TIMEOUT_SECONDS}_seconds"
+            
+            # Send RPC notification about session closure
+            try:
+                payload = json.dumps(close_details)
+                
+                task = asyncio.create_task(
+                    self.ctx.room.local_participant.perform_rpc(
+                        destination_identity=self.participant.identity,
+                        method="end_session",
+                        payload=payload,
+                        response_timeout=1.0
+                    )
+                )
+                
+                # Add completion callback for error logging
+                def handle_rpc_result(future):
+                    try:
+                        future.result()
+                        logger.debug(f"End session RPC sent successfully: {ev.reason.value}")
+                    except Exception as e:
+                        logger.warning(f"Failed to send end session RPC: {e}")
+
+                task.add_done_callback(handle_rpc_result)
+                
+            except Exception as e:
+                logger.error(f"Error sending session close RPC: {e}")
+            
+            # Safe room deletion with error handling
+            # try:
+            #     self.ctx.delete_room()
+            #     logger.debug("Room deletion initiated successfully")
+            # except Exception as e:
+            #     # Log but don't re-raise - session cleanup should continue gracefully
+            #     logger.warning(f"Room deletion failed (likely already deleted): {e}")
 
         return on_session_close
+
+
+    def _handle_eou_metrics(self, eou_metrics: metrics.EOUMetrics):
+        """Handle End-of-Utterance metrics."""
+        # Store for E2E calculation
+        self.last_eou_time = eou_metrics.last_speaking_time
+        
+        # Reset metrics collection for new cycle
+        self.llm_ttft = None
+        self.tts_ttfb = None
+        self.stf_ttff = None
+        self.e2e_latency = None
+        self.metrics_logged = False
+        
+        # Log EOU components
+        self.eou_ms = eou_metrics.end_of_utterance_delay * 1000
+        self.stt_ms = eou_metrics.transcription_delay * 1000
+        logger.debug(f"📝 EOU: {self.eou_ms:.0f}ms, STT: {self.stt_ms:.0f}ms")
+
+    def _handle_llm_metrics(self, llm_metrics: metrics.LLMMetrics):
+        """Handle LLM metrics."""
+        self.llm_ttft = llm_metrics.ttft * 1000  # Convert to ms
+        logger.debug(f"🧠 LLM TTFT: {self.llm_ttft:.0f}ms")
+
+    def _handle_tts_metrics(self, tts_metrics: metrics.TTSMetrics):
+        """Handle TTS metrics."""
+        self.tts_ttfb = tts_metrics.ttfb * 1000  # Convert to ms
+        logger.debug(f"🔊 TTS TTFB: {self.tts_ttfb:.0f}ms")
+
+    def _handle_stf_metrics(self, stf_metrics: metrics.STFMetrics):
+        """Handle STF metrics and log complete pipeline."""
+        # Record STF timing
+        if hasattr(stf_metrics, 'ttff') and stf_metrics.ttff > 0:
+            self.stf_ttff = stf_metrics.ttff * 1000  # Convert to ms
+            logger.debug(f"🎭 STF TTFF: {self.stf_ttff:.0f}ms (streaming)")
+        else:
+            self.stf_ttff = stf_metrics.duration * 1000  # Fallback
+            logger.debug(f"🎭 STF duration: {self.stf_ttff:.0f}ms (legacy)")
+        
+        # Log complete metrics once (STF is typically the last metric)
+        if not self.metrics_logged:
+            self._log_complete_metrics()
+            self.metrics_logged = True
+
+    def _handle_vad_metrics(self, vad_metrics: metrics.VADMetrics):
+        """Handle VAD metrics (silent - too noisy for logs)."""
+        _ = vad_metrics  # Acknowledge parameter to avoid linting warning
+        pass
+
+    def _handle_stt_metrics(self, stt_metrics: metrics.STTMetrics):
+        """Handle STT metrics (silent - too noisy for logs)."""
+        _ = stt_metrics  # Acknowledge parameter to avoid linting warning
+        pass
+
+    def _log_complete_metrics(self):
+        """Log complete reactivity breakdown with E2E."""
+        parts = []
+        
+        # Add E2E as the first metric if available
+        if self.e2e_latency is not None:
+            parts.append(f"E2E: {self.e2e_latency:.0f}ms")
+        
+        # Streaming latencies
+        if self.stt_ms is not None:
+            parts.append(f"STT: {self.stt_ms:.0f}ms")
+        if self.llm_ttft is not None:
+            parts.append(f"LLM: {self.llm_ttft:.0f}ms")
+        if self.tts_ttfb is not None:
+            parts.append(f"TTS: {self.tts_ttfb:.0f}ms")
+        if self.stf_ttff is not None:
+            parts.append(f"STF: {self.stf_ttff:.0f}ms")
+        
+        if parts:
+            logger.info(f"🚀 Complete Metrics: {' | '.join(parts)}")
