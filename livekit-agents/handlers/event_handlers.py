@@ -9,7 +9,8 @@ import time
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from config.session_config import USER_INACTIVITY_TIMEOUT_SECONDS
+# User inactivity timeout configuration
+USER_INACTIVITY_TIMEOUT_SECONDS = 60
 from user_database import ChatMessage, UserData, UserDatabase
 
 from livekit import rtc

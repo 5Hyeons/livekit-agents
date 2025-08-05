@@ -26,14 +26,9 @@ from livekit.agents.voice.agent_session import AgentSession
 from livekit.plugins import silero
 
 from agent.wallmate_agent import WallmateAgent
-from core.session_setup import SessionSetup
+from config import setup_session
 from handlers.event_handlers import SessionEventHandlers
 from handlers.rpc_handlers import RPCHandlers
-from config.session_config import (
-    VAD_ACTIVATION_THRESHOLD,
-    AGENT_PREEMPTIVE_GENERATION,
-    METRICS_COLLECTION_ENABLED,
-)
 
 # Load environment variables
 load_dotenv()
@@ -48,8 +43,8 @@ def prewarm(proc: JobProcess):
         proc: Job process instance
     """
     # Load VAD model with optimized threshold
-    proc.userdata["vad"] = silero.VAD.load(activation_threshold=VAD_ACTIVATION_THRESHOLD)
-    logger.info(f"VAD model prewarmed successfully (threshold: {VAD_ACTIVATION_THRESHOLD})")
+    proc.userdata["vad"] = silero.VAD.load(activation_threshold=0.4)
+    logger.info("VAD model prewarmed successfully")
 
 
 async def entrypoint(ctx: JobContext):
@@ -76,7 +71,7 @@ async def entrypoint(ctx: JobContext):
     logger.info(f"Starting wallmate agent for participant: {participant.identity}")
     
     # Setup session configuration
-    setup_data = SessionSetup.validate_and_setup_session(participant)
+    setup_data = setup_session(participant)
     
     # Extract setup data
     user_language = setup_data['user_language']
@@ -90,11 +85,11 @@ async def entrypoint(ctx: JobContext):
     # Create agent session
     session = AgentSession(
         vad=ctx.proc.userdata["vad"],
-        preemptive_generation=AGENT_PREEMPTIVE_GENERATION,
+        preemptive_generation=False,
         )
     
     # Create usage collector for metrics
-    usage_collector = metrics.UsageCollector() if METRICS_COLLECTION_ENABLED else None
+    usage_collector = metrics.UsageCollector()
     
     # Create agent instance
     agent = WallmateAgent(user_data, db, user_language, custom_persona, voice_name)

@@ -4,6 +4,7 @@ Voice configuration for ElevenLabs TTS integration.
 
 from dataclasses import dataclass
 from livekit.plugins import elevenlabs
+# import elevenlabs
 
 
 @dataclass
@@ -143,4 +144,5 @@ class ElevenLabsConfig:
             ),
             encoding="mp3_22050_32",
             auto_mode=True,
+            language="ko",
         )

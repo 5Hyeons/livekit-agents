@@ -4,14 +4,11 @@ WallmateAgent class for LiveKit voice AI agents with face animation support.
 
 import logging
 
-from config.base_instructions import create_base_instructions
-from config.voice_config import ElevenLabsConfig
+from config import get_stt, get_llm, get_tts, get_stf, create_instructions
 from user_database import UserData, UserDatabase
 
 from livekit.agents.llm import function_tool
-from livekit.agents.stf import FaceAnimator, OutputMode
 from livekit.agents.voice.agent import Agent
-from livekit.plugins import deepgram, openai, cartesia, anthropic
 
 logger = logging.getLogger("wallmate-agent")
 
@@ -58,12 +55,9 @@ class WallmateAgent(Agent):
         # Performance tracking is now handled in event_handlers.py
 
         # Create base instructions with persona
-        base_instructions = create_base_instructions(
+        base_instructions = create_instructions(
             self.user_language, custom_persona=self.custom_persona
         )
-
-        # Configure voice settings
-        elevenlabs_config = ElevenLabsConfig.from_voice_name(voice_name)
 
         # Load previous conversation history into chat context
         chat_ctx = self._prepare_chat_context_with_history(self._preloaded_message_count)
@@ -73,20 +67,14 @@ class WallmateAgent(Agent):
             f"Loaded {self._preloaded_message_count} messages from conversation history"
         )
 
-        # Initialize parent Agent with components
+        # Initialize parent Agent with simple config
         super().__init__(
             instructions=base_instructions,
             chat_ctx=chat_ctx,
-            stt=deepgram.STT(model="nova-2-general", language=self.user_language),
-            # llm=openai.LLM(model="gpt-4o"),
-            llm=anthropic.LLM(
-                model="claude-4-sonnet-20250514",
-                caching="ephemeral",
-                max_tokens=256,
-            ),
-            tts=elevenlabs_config.create_tts(),
-            # tts=cartesia.TTS(model="sonic-turbo", language="ko", voice='0d23306e-f559-4db2-a65d-0729c0fe6f0f', speed='fast'),
-            stf=FaceAnimator(chunk_duration_sec=0.5, output_mode=OutputMode.ANIMATION_WITH_AUDIO),
+            stt=get_stt(self.user_language),
+            llm=get_llm(),
+            tts=get_tts(voice_name),
+            stf=get_stf(),
         )
 
     def _prepare_chat_context_with_history(self, message_count: int):
