@@ -90,6 +90,13 @@ class SessionEventHandlers:
             logger.info(f"Metrics logging enabled for user: {self.participant.identity}")
         else:
             logger.debug(f"Metrics logging disabled for user: {self.participant.identity}")
+        
+        # Token status tracking for RPC notifications
+        self._last_token_status = "normal"  # Track previous status to detect changes
+        self._token_thresholds = {
+            "critical": 200,
+            "low": 500
+        }
 
     def create_agent_state_handler(self):
         """
@@ -270,6 +277,26 @@ class SessionEventHandlers:
             if self.usage_collector:
                 summary = self.usage_collector.get_summary()
                 logger.info(f"Session ended - Final usage statistics: {summary}")
+            
+            # Log database-stored usage summary with token info
+            try:
+                usage_summary = self.db.get_usage_summary(self.participant.identity)
+                session_usage = self.db.get_session_usage(self.user_data.session_id)
+                token_info = self.db.get_token_info(self.participant.identity)
+                
+                logger.info(
+                    f"📊 Session Usage Summary:\n"
+                    f"  - LLM Requests: {len(session_usage['llm_usage'])}\n" 
+                    f"  - TTS Requests: {len(session_usage['tts_usage'])}\n"
+                    f"  - Total LLM Tokens (All-time): {usage_summary['llm']['total_tokens']}\n"
+                    f"  - Total TTS Characters (All-time): {usage_summary['tts']['total_characters']}\n"
+                    f"  💰 Token Balance:\n"
+                    f"    - Remaining: {token_info['remaining_tokens']}\n"
+                    f"    - Used: {token_info['total_tokens_used']}\n"
+                    f"    - Granted: {token_info['total_tokens_granted']}"
+                )
+            except Exception as e:
+                logger.error(f"Failed to get usage summary from database: {e}")
 
             # Performance metrics were logged during execution
 
@@ -388,14 +415,88 @@ class SessionEventHandlers:
         logger.debug(f"📝 EOU: {self.eou_ms:.0f}ms, STT: {self.stt_ms:.0f}ms")
 
     def _handle_llm_metrics(self, llm_metrics: metrics.LLMMetrics):
-        """Handle LLM metrics."""
+        """Handle LLM metrics and save to database."""
         self.llm_ttft = llm_metrics.ttft * 1000  # Convert to ms
         logger.debug(f"🧠 LLM TTFT: {self.llm_ttft:.0f}ms")
+        
+        # 데이터베이스에 실시간 저장
+        try:
+            # metrics 객체를 dict로 변환
+            metrics_dict = {
+                'request_id': llm_metrics.request_id,
+                'prompt_tokens': llm_metrics.prompt_tokens,
+                'prompt_cached_tokens': llm_metrics.prompt_cached_tokens,
+                'completion_tokens': llm_metrics.completion_tokens,
+                'total_tokens': llm_metrics.total_tokens,
+                'duration': llm_metrics.duration,
+                'cancelled': llm_metrics.cancelled,
+                'label': llm_metrics.label,
+                'ttft': llm_metrics.ttft,
+                'tokens_per_second': llm_metrics.tokens_per_second,
+                'speech_id': llm_metrics.speech_id
+            }
+            
+            # DB에 저장
+            self.db.save_llm_usage(
+                participant_id=self.participant.identity,
+                session_id=self.user_data.session_id,
+                metrics=metrics_dict
+            )
+            
+            # 실시간 사용량 로깅
+            logger.info(
+                f"💾 LLM Usage Saved - Tokens: {llm_metrics.total_tokens} "
+                f"(prompt: {llm_metrics.prompt_tokens}, "
+                f"cached: {llm_metrics.prompt_cached_tokens}, "
+                f"completion: {llm_metrics.completion_tokens})"
+            )
+            
+        except Exception as e:
+            logger.error(f"Failed to save LLM usage to database: {e}")
 
     def _handle_tts_metrics(self, tts_metrics: metrics.TTSMetrics):
-        """Handle TTS metrics."""
+        """Handle TTS metrics and save to database."""
         self.tts_ttfb = tts_metrics.ttfb * 1000  # Convert to ms
         logger.debug(f"🔊 TTS TTFB: {self.tts_ttfb:.0f}ms")
+        
+        # 데이터베이스에 실시간 저장
+        try:
+            # metrics 객체를 dict로 변환
+            metrics_dict = {
+                'request_id': tts_metrics.request_id,
+                'characters_count': tts_metrics.characters_count,
+                'audio_duration': tts_metrics.audio_duration,
+                'duration': tts_metrics.duration,
+                'cancelled': tts_metrics.cancelled,
+                'label': tts_metrics.label,
+                'ttfb': tts_metrics.ttfb,
+                'streamed': tts_metrics.streamed,
+                'segment_id': tts_metrics.segment_id,
+                'speech_id': tts_metrics.speech_id
+            }
+            
+            # DB에 저장
+            self.db.save_tts_usage(
+                participant_id=self.participant.identity,
+                session_id=self.user_data.session_id,
+                metrics=metrics_dict
+            )
+            
+            # 토큰 잔액 확인 및 로깅
+            remaining_tokens = self.db.get_remaining_tokens(self.participant.identity)
+            
+            # 토큰 상태 체크 및 RPC 알림
+            self._check_and_notify_token_status(remaining_tokens, tts_metrics.characters_count)
+            
+            # 실시간 사용량 로깅 (토큰 정보 포함)
+            logger.info(
+                f"💾 TTS Usage Saved - Characters: {tts_metrics.characters_count}, "
+                f"Audio: {tts_metrics.audio_duration:.2f}s, "
+                f"Remaining Tokens: {remaining_tokens}"
+            )
+            
+        except Exception as e:
+            logger.error(f"Failed to save TTS usage to database: {e}")
 
     def _handle_stf_metrics(self, stf_metrics: metrics.STFMetrics):
         """Handle STF metrics and log complete pipeline."""
@@ -422,6 +523,80 @@ class SessionEventHandlers:
         _ = stt_metrics  # Acknowledge parameter to avoid linting warning
         pass
 
+    def _check_and_notify_token_status(self, remaining_tokens: int, characters_used: int):
+        """토큰 상태 확인 및 필요시 RPC 알림 전송"""
+        
+        # 현재 상태 결정
+        if remaining_tokens == 0:
+            current_status = "depleted"
+            message = "Your tokens are depleted"
+        elif remaining_tokens <= self._token_thresholds["critical"]:
+            current_status = "critical"
+            message = f"Critical: Only {remaining_tokens} tokens remaining"
+        elif remaining_tokens <= self._token_thresholds["low"]:
+            current_status = "low"
+            message = f"Low balance: {remaining_tokens} tokens remaining"
+        else:
+            current_status = "normal"
+            message = f"Normal: {remaining_tokens} tokens remaining"
+        
+        # 상태 변경 감지 (악화된 경우만 알림)
+        should_notify = False
+        if current_status == "depleted" and self._last_token_status != "depleted":
+            should_notify = True
+        elif current_status == "critical" and self._last_token_status in ["low", "normal"]:
+            should_notify = True
+        elif current_status == "low" and self._last_token_status == "normal":
+            should_notify = True
+        
+        # RPC 전송
+        if should_notify:
+            try:
+                token_info = self.db.get_token_info(self.participant.identity)
+                percentage = (remaining_tokens / token_info['total_tokens_granted'] * 100) if token_info['total_tokens_granted'] > 0 else 0
+                
+                payload = json.dumps({
+                    "status": current_status,
+                    "remaining_tokens": remaining_tokens,
+                    "total_granted": token_info['total_tokens_granted'],
+                    "total_used": token_info['total_tokens_used'],
+                    "percentage_remaining": round(percentage, 1),
+                    "last_usage": {
+                        "characters": characters_used,
+                        "timestamp": time.time()
+                    },
+                    "thresholds": self._token_thresholds,
+                    "message": message
+                })
+                
+                task = asyncio.create_task(
+                    self.ctx.room.local_participant.perform_rpc(
+                        destination_identity=self.participant.identity,
+                        method="token_status_update",
+                        payload=payload,
+                        response_timeout=1.0
+                    )
+                )
+                
+                # Add completion callback for error logging
+                def handle_rpc_result(future):
+                    try:
+                        future.result()
+                        logger.debug(f"Token status RPC sent successfully: {current_status}")
+                    except Exception as e:
+                        logger.warning(f"Failed to send token status RPC: {e}")
+                
+                task.add_done_callback(handle_rpc_result)
+                
+                # 로깅
+                logger.info(f"📢 Token status RPC sent: {current_status} - {message}")
+                
+            except Exception as e:
+                logger.error(f"Error sending token status RPC: {e}")
+            
+            # 상태 업데이트
+            self._last_token_status = current_status
+    
     def _log_complete_metrics(self):
         """Log complete reactivity breakdown with E2E."""
         parts = []

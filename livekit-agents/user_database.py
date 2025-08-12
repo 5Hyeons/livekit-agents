@@ -89,7 +89,10 @@ class UserDatabase:
                     first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     language TEXT DEFAULT 'ko',
-                    metadata TEXT
+                    metadata TEXT,
+                    remaining_tokens INTEGER DEFAULT 2000,
+                    total_tokens_granted INTEGER DEFAULT 2000,
+                    total_tokens_used INTEGER DEFAULT 0
                 )
             """)
             
@@ -107,9 +110,63 @@ class UserDatabase:
                 )
             """)
             
+            # 사용량 메트릭 테이블
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS usage_metrics (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    participant_id TEXT NOT NULL,
+                    session_id TEXT NOT NULL,
+                    metric_type TEXT NOT NULL,
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    request_id TEXT,
+                    
+                    -- LLM specific fields
+                    prompt_tokens INTEGER,
+                    prompt_cached_tokens INTEGER,
+                    completion_tokens INTEGER,
+                    total_tokens INTEGER,
+                    
+                    -- TTS specific fields
+                    characters_count INTEGER,
+                    audio_duration REAL,
+                    
+                    -- Common fields
+                    duration REAL,
+                    cancelled BOOLEAN DEFAULT FALSE,
+                    
+                    -- Additional metadata
+                    metadata TEXT,
+                    
+                    FOREIGN KEY (participant_id) REFERENCES users(participant_id)
+                )
+            """)
+            
             # 인덱스 생성
             conn.execute("CREATE INDEX IF NOT EXISTS idx_chat_participant ON chat_history(participant_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_chat_session ON chat_history(session_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_participant ON usage_metrics(participant_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_session ON usage_metrics(session_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_type ON usage_metrics(metric_type)")
+            
+            # 기존 users 테이블에 토큰 컬럼 추가 (마이그레이션)
+            cursor = conn.cursor()
+            cursor.execute("PRAGMA table_info(users)")
+            columns = [column[1] for column in cursor.fetchall()]
+            
+            if 'remaining_tokens' not in columns:
+                conn.execute("ALTER TABLE users ADD COLUMN remaining_tokens INTEGER DEFAULT 2000")
+                conn.execute("UPDATE users SET remaining_tokens = 2000 WHERE remaining_tokens IS NULL")
+                logger.info("Added remaining_tokens column to users table")
+            
+            if 'total_tokens_granted' not in columns:
+                conn.execute("ALTER TABLE users ADD COLUMN total_tokens_granted INTEGER DEFAULT 2000")
+                conn.execute("UPDATE users SET total_tokens_granted = 2000 WHERE total_tokens_granted IS NULL")
+                logger.info("Added total_tokens_granted column to users table")
+            
+            if 'total_tokens_used' not in columns:
+                conn.execute("ALTER TABLE users ADD COLUMN total_tokens_used INTEGER DEFAULT 0")
+                conn.execute("UPDATE users SET total_tokens_used = 0 WHERE total_tokens_used IS NULL")
+                logger.info("Added total_tokens_used column to users table")
             
     def get_or_create_user(self, participant_id: str) -> UserData:
         """사용자 정보를 가져오거나 새로 생성"""
@@ -134,8 +191,8 @@ class UserDatabase:
                 # 새 사용자 생성
                 now = datetime.now()
                 conn.execute(
-                    "INSERT INTO users (participant_id, first_seen, last_seen, language) VALUES (?, ?, ?, ?)",
-                    (participant_id, now, now, 'ko')
+                    "INSERT INTO users (participant_id, first_seen, last_seen, language, remaining_tokens, total_tokens_granted, total_tokens_used) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (participant_id, now, now, 'ko', 2000, 2000, 0)
                 )
                 user_data = UserData(
                     participant_id=participant_id,
@@ -143,7 +200,7 @@ class UserDatabase:
                     last_seen=now,
                     language='ko'
                 )
-                logger.info(f"새 사용자 생성: {participant_id}")
+                logger.info(f"새 사용자 생성: {participant_id} (2000 토큰 부여)")
                 
         return user_data
         
@@ -295,3 +352,252 @@ class UserDatabase:
             deleted_count = cursor.rowcount
             logger.info(f"사용자 {self.participant_id}의 채팅 기록 {deleted_count}개 삭제")
             return deleted_count
+    
+    def save_llm_usage(self, participant_id: str, session_id: str, metrics: Dict[str, Any]):
+        """LLM 사용량 저장"""
+        with self.get_connection() as conn:
+            conn.execute(
+                """INSERT INTO usage_metrics 
+                   (participant_id, session_id, metric_type, timestamp, request_id,
+                    prompt_tokens, prompt_cached_tokens, completion_tokens, total_tokens,
+                    duration, cancelled, metadata) 
+                   VALUES (?, ?, 'llm', ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    participant_id,
+                    session_id,
+                    datetime.now(),
+                    metrics.get('request_id'),
+                    metrics.get('prompt_tokens', 0),
+                    metrics.get('prompt_cached_tokens', 0),
+                    metrics.get('completion_tokens', 0),
+                    metrics.get('total_tokens', 0),
+                    metrics.get('duration', 0.0),
+                    metrics.get('cancelled', False),
+                    json.dumps({
+                        'label': metrics.get('label'),
+                        'ttft': metrics.get('ttft'),
+                        'tokens_per_second': metrics.get('tokens_per_second'),
+                        'speech_id': metrics.get('speech_id')
+                    })
+                )
+            )
+            logger.debug(f"LLM usage saved: {participant_id}, tokens: {metrics.get('total_tokens')}")
+    
+    def save_tts_usage(self, participant_id: str, session_id: str, metrics: Dict[str, Any]):
+        """TTS 사용량 저장 및 토큰 차감"""
+        characters_count = metrics.get('characters_count', 0)
+        
+        with self.get_connection() as conn:
+            # TTS 사용량 저장
+            conn.execute(
+                """INSERT INTO usage_metrics 
+                   (participant_id, session_id, metric_type, timestamp, request_id,
+                    characters_count, audio_duration, duration, cancelled, metadata) 
+                   VALUES (?, ?, 'tts', ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    participant_id,
+                    session_id,
+                    datetime.now(),
+                    metrics.get('request_id'),
+                    characters_count,
+                    metrics.get('audio_duration', 0.0),
+                    metrics.get('duration', 0.0),
+                    metrics.get('cancelled', False),
+                    json.dumps({
+                        'label': metrics.get('label'),
+                        'ttfb': metrics.get('ttfb'),
+                        'streamed': metrics.get('streamed'),
+                        'segment_id': metrics.get('segment_id'),
+                        'speech_id': metrics.get('speech_id')
+                    })
+                )
+            )
+            logger.debug(f"TTS usage saved: {participant_id}, chars: {characters_count}")
+            
+        # 토큰 차감 (1 character = 1 token)
+        if characters_count > 0:
+            success = self.deduct_tokens(participant_id, characters_count)
+            if not success:
+                logger.warning(f"Token deduction failed for {participant_id}: insufficient balance for {characters_count} tokens")
+    
+    def get_usage_summary(self, participant_id: str) -> Dict[str, Any]:
+        """사용자의 전체 사용량 요약 조회"""
+        with self.get_connection() as conn:
+            # LLM 사용량 합계
+            llm_result = conn.execute(
+                """SELECT 
+                    COUNT(*) as request_count,
+                    SUM(prompt_tokens) as total_prompt_tokens,
+                    SUM(prompt_cached_tokens) as total_cached_tokens,
+                    SUM(completion_tokens) as total_completion_tokens,
+                    SUM(total_tokens) as total_tokens
+                   FROM usage_metrics 
+                   WHERE participant_id = ? AND metric_type = 'llm'""",
+                (participant_id,)
+            ).fetchone()
+            
+            # TTS 사용량 합계
+            tts_result = conn.execute(
+                """SELECT 
+                    COUNT(*) as request_count,
+                    SUM(characters_count) as total_characters,
+                    SUM(audio_duration) as total_audio_duration
+                   FROM usage_metrics 
+                   WHERE participant_id = ? AND metric_type = 'tts'""",
+                (participant_id,)
+            ).fetchone()
+            
+            return {
+                'participant_id': participant_id,
+                'llm': {
+                    'request_count': llm_result['request_count'] or 0,
+                    'total_prompt_tokens': llm_result['total_prompt_tokens'] or 0,
+                    'total_cached_tokens': llm_result['total_cached_tokens'] or 0,
+                    'total_completion_tokens': llm_result['total_completion_tokens'] or 0,
+                    'total_tokens': llm_result['total_tokens'] or 0
+                },
+                'tts': {
+                    'request_count': tts_result['request_count'] or 0,
+                    'total_characters': tts_result['total_characters'] or 0,
+                    'total_audio_duration': tts_result['total_audio_duration'] or 0.0
+                }
+            }
+    
+    def get_remaining_tokens(self, participant_id: str) -> int:
+        """사용자의 남은 토큰 조회"""
+        with self.get_connection() as conn:
+            result = conn.execute(
+                "SELECT remaining_tokens FROM users WHERE participant_id = ?",
+                (participant_id,)
+            ).fetchone()
+            
+            if result:
+                return result['remaining_tokens'] or 0
+            return 0
+    
+    def deduct_tokens(self, participant_id: str, amount: int) -> bool:
+        """토큰 차감 (잔액 부족시 False 반환)"""
+        with self.get_connection() as conn:
+            # 현재 잔액 확인
+            result = conn.execute(
+                "SELECT remaining_tokens FROM users WHERE participant_id = ?",
+                (participant_id,)
+            ).fetchone()
+            
+            if not result:
+                logger.error(f"User not found: {participant_id}")
+                return False
+            
+            current_tokens = result['remaining_tokens'] or 0
+            
+            if current_tokens < amount:
+                logger.warning(f"Insufficient tokens for {participant_id}: {current_tokens} < {amount}")
+                # 잔액 부족이어도 0으로 만들고 진행 (음수 방지)
+                conn.execute(
+                    """UPDATE users 
+                       SET remaining_tokens = 0,
+                           total_tokens_used = total_tokens_used + ?,
+                           last_seen = ?
+                       WHERE participant_id = ?""",
+                    (current_tokens, datetime.now(), participant_id)
+                )
+                return False
+            
+            # 토큰 차감
+            conn.execute(
+                """UPDATE users 
+                   SET remaining_tokens = remaining_tokens - ?,
+                       total_tokens_used = total_tokens_used + ?,
+                       last_seen = ?
+                   WHERE participant_id = ?""",
+                (amount, amount, datetime.now(), participant_id)
+            )
+            
+            new_balance = current_tokens - amount
+            logger.debug(f"Tokens deducted for {participant_id}: {amount} (remaining: {new_balance})")
+            return True
+    
+    def add_tokens(self, participant_id: str, amount: int):
+        """토큰 충전 (관리자용)"""
+        with self.get_connection() as conn:
+            conn.execute(
+                """UPDATE users 
+                   SET remaining_tokens = remaining_tokens + ?,
+                       total_tokens_granted = total_tokens_granted + ?,
+                       last_seen = ?
+                   WHERE participant_id = ?""",
+                (amount, amount, datetime.now(), participant_id)
+            )
+            
+            # 새 잔액 조회
+            result = conn.execute(
+                "SELECT remaining_tokens FROM users WHERE participant_id = ?",
+                (participant_id,)
+            ).fetchone()
+            
+            if result:
+                new_balance = result['remaining_tokens']
+                logger.info(f"Tokens added for {participant_id}: +{amount} (new balance: {new_balance})")
+    
+    def get_token_info(self, participant_id: str) -> Dict[str, int]:
+        """사용자의 토큰 정보 조회"""
+        with self.get_connection() as conn:
+            result = conn.execute(
+                """SELECT remaining_tokens, total_tokens_granted, total_tokens_used 
+                   FROM users WHERE participant_id = ?""",
+                (participant_id,)
+            ).fetchone()
+            
+            if result:
+                return {
+                    'remaining_tokens': result['remaining_tokens'] or 0,
+                    'total_tokens_granted': result['total_tokens_granted'] or 2000,
+                    'total_tokens_used': result['total_tokens_used'] or 0
+                }
+            return {
+                'remaining_tokens': 0,
+                'total_tokens_granted': 0,
+                'total_tokens_used': 0
+            }
+    
+    def get_session_usage(self, session_id: str) -> Dict[str, Any]:
+        """특정 세션의 사용량 조회"""
+        with self.get_connection() as conn:
+            results = conn.execute(
+                """SELECT * FROM usage_metrics 
+                   WHERE session_id = ? 
+                   ORDER BY timestamp""",
+                (session_id,)
+            ).fetchall()
+            
+            llm_usage = []
+            tts_usage = []
+            
+            for row in results:
+                record = {
+                    'timestamp': row['timestamp'],
+                    'request_id': row['request_id'],
+                    'duration': row['duration'],
+                    'cancelled': bool(row['cancelled'])
+                }
+                
+                if row['metric_type'] == 'llm':
+                    record.update({
+                        'prompt_tokens': row['prompt_tokens'],
+                        'cached_tokens': row['prompt_cached_tokens'],
+                        'completion_tokens': row['completion_tokens'],
+                        'total_tokens': row['total_tokens']
+                    })
+                    llm_usage.append(record)
+                elif row['metric_type'] == 'tts':
+                    record.update({
+                        'characters_count': row['characters_count'],
+                        'audio_duration': row['audio_duration']
+                    })
+                    tts_usage.append(record)
+            
+            return {
+                'session_id': session_id,
+                'llm_usage': llm_usage,
+                'tts_usage': tts_usage
+            }
