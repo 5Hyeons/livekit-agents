@@ -91,8 +91,20 @@ async def entrypoint(ctx: JobContext):
     # Create usage collector for metrics
     usage_collector = metrics.UsageCollector()
     
+    # Get identity information
+    participant_identity = participant.identity
+    agent_identity = ctx.room.local_participant.identity
+    
     # Create agent instance
-    agent = WallmateAgent(user_data, db, user_language, custom_persona, voice_name)
+    agent = WallmateAgent(
+        user_data, 
+        db, 
+        participant_identity, 
+        agent_identity, 
+        user_language, 
+        custom_persona, 
+        voice_name
+    )
     
     # Create event handlers
     event_handlers = SessionEventHandlers(

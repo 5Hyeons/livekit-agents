@@ -3,12 +3,21 @@ WallmateAgent class for LiveKit voice AI agents with face animation support.
 """
 
 import logging
+import os
+import wave
+from collections.abc import AsyncIterable
+from datetime import datetime
 
-from config import get_stt, get_llm, get_tts, get_stf, create_instructions
+from config import (
+    get_stt, get_llm, get_tts, get_stf, create_instructions,
+    is_tts_logging_enabled, get_tts_output_directory, ensure_logging_directories
+)
 from user_database import UserData, UserDatabase
 
+from livekit.agents import utils
 from livekit.agents.llm import function_tool
-from livekit.agents.voice.agent import Agent
+from livekit.agents.voice.agent import Agent, ModelSettings
+from livekit.rtc import AudioFrame
 
 logger = logging.getLogger("wallmate-agent")
 
@@ -29,6 +38,8 @@ class WallmateAgent(Agent):
         self,
         user_data: UserData,
         db: UserDatabase,
+        participant_identity: str,
+        agent_identity: str,
         user_language: str = "ko",
         custom_persona: str = "",
         voice_name: str = "FEMALE_1",
@@ -39,15 +50,30 @@ class WallmateAgent(Agent):
         Args:
             user_data: User data from database
             db: Database instance for persistence
+            participant_identity: Identity of the participant
+            agent_identity: Identity of the agent
             user_language: User's preferred language (ko, en, ja, zh)
             custom_persona: Custom personality instructions
             voice_name: Voice preset name (FEMALE_1/2, MALE_1/2)
         """
         self.user_data = user_data
         self.db = db
+        self.participant_identity = participant_identity
+        self.agent_identity = agent_identity
         self.user_language = user_language
         self.custom_persona = custom_persona
         self._preloaded_message_count = 120  # Number of messages to load from history
+        
+        # Initialize logging directories for this user
+        self.logging_enabled = is_tts_logging_enabled(self.participant_identity)
+        self.tts_output_dir = None
+        
+        if self.logging_enabled:
+            logging_dirs = ensure_logging_directories(self.participant_identity)
+            self.tts_output_dir = logging_dirs["tts_output"]
+            logger.info(f"TTS logging enabled for user: {self.participant_identity}")
+        else:
+            logger.debug(f"TTS logging disabled for user: {self.participant_identity}")
 
         if self.custom_persona:
             logger.info(f"Use Custom persona: {self.custom_persona}")
@@ -115,6 +141,7 @@ class WallmateAgent(Agent):
             # Skip separator lines like "---"
 
         return chat_ctx
+    
 
     async def on_enter(self):
         """
@@ -158,4 +185,88 @@ class WallmateAgent(Agent):
 
         # Return system context for the agent to acknowledge
         return f"[SYSTEM_CONTEXT: User introduced themselves as '{name}'. Acknowledge this naturally and continue the conversation.]"
+    
+    def _save_audio_frames_as_wav(self, audio_frames: list[AudioFrame], text_context: str = ""):
+        """
+        Save accumulated audio frames as a WAV file for allowed users only.
+        
+        Args:
+            audio_frames: List of audio frames to save
+            text_context: Text that was synthesized (for filename)
+        """
+        # Check if logging is enabled for this user
+        if not self.logging_enabled or not self.tts_output_dir or not audio_frames:
+            return
+            
+        try:
+            # Generate unique filename with timestamp and identities
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]  # milliseconds precision
+            safe_participant = self.participant_identity.replace("/", "_").replace("\\", "_")
+            safe_agent = self.agent_identity.replace("/", "_").replace("\\", "_")
+            filename = f"{timestamp}_{safe_participant}_{safe_agent}.wav"
+            filepath = os.path.join(self.tts_output_dir, filename)
+            
+            # Combine all audio frames
+            combined_frame = utils.audio.combine_frames(audio_frames)
+            
+            # Save as WAV file
+            with wave.open(filepath, "wb") as wf:
+                wf.setnchannels(combined_frame.num_channels)
+                wf.setsampwidth(2)  # 16-bit audio
+                wf.setframerate(combined_frame.sample_rate)
+                wf.writeframes(combined_frame.data)
+            
+            # Log success with text context
+            text_preview = text_context[:50] + "..." if len(text_context) > 50 else text_context
+            logger.info(
+                f"[TTS SAVED] File: {filename}, Text: \"{text_preview}\", "
+                f"Duration: {combined_frame.duration:.2f}s, Frames: {len(audio_frames)}"
+            )
+            
+        except Exception as e:
+            logger.error(f"Failed to save TTS audio to {filepath}: {e}")
+
+    async def tts_node(
+        self, text: AsyncIterable[str], model_settings: ModelSettings
+    ) -> AsyncIterable[AudioFrame]:
+        """
+        Override TTS node to log text input and save audio output.
+        
+        Args:
+            text: Async iterable of text segments to be synthesized
+            model_settings: Model settings for TTS processing
+            
+        Returns:
+            AsyncIterable[AudioFrame]: Audio frames from TTS synthesis
+        """
+        # Collect text for context and audio frames for saving
+        collected_text_chunks = []
+        collected_audio_frames = []
+        
+        async def enhanced_log_and_forward_text():
+            async for text_chunk in text:
+                if text_chunk.strip():  # Only process non-empty text chunks
+                    collected_text_chunks.append(text_chunk.strip())
+                    # Only log text if TTS logging is enabled for this user
+                    if self.logging_enabled:
+                        logger.info(
+                            f"[TTS] Participant: {self.participant_identity}, "
+                            f"Agent: {self.agent_identity}, Text: \"{text_chunk.strip()}\""
+                        )
+                yield text_chunk
+        
+        # Get audio frames from parent's tts_node
+        audio_stream = super().tts_node(enhanced_log_and_forward_text(), model_settings)
+        
+        async def collect_and_forward_audio():
+            async for audio_frame in audio_stream:
+                collected_audio_frames.append(audio_frame)
+                yield audio_frame
+            
+            # After all audio frames are processed, save to file (only for allowed users)
+            if collected_audio_frames and collected_text_chunks and self.logging_enabled:
+                full_text = " ".join(collected_text_chunks)
+                self._save_audio_frames_as_wav(collected_audio_frames, full_text)
+        
+        return collect_and_forward_audio()
 

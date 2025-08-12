@@ -5,6 +5,7 @@ Event handlers for agent session management.
 import asyncio
 import json
 import logging
+import os
 import time
 from datetime import datetime
 from typing import TYPE_CHECKING
@@ -12,6 +13,7 @@ from typing import TYPE_CHECKING
 # User inactivity timeout configuration
 USER_INACTIVITY_TIMEOUT_SECONDS = 60
 from user_database import ChatMessage, UserData, UserDatabase
+from config import is_metrics_logging_enabled, get_metrics_output_directory, ensure_logging_directories
 
 from livekit import rtc
 from livekit.agents import JobContext, llm, metrics
@@ -77,6 +79,17 @@ class SessionEventHandlers:
         self.stf_ttff = None  # STF Time to First Frame
         self.e2e_latency = None  # E2E Response Time
         self.metrics_logged = False  # Prevent duplicate logging
+        
+        # Initialize metrics logging for this user
+        self.metrics_logging_enabled = is_metrics_logging_enabled(self.participant.identity)
+        self.metrics_output_dir = None
+        
+        if self.metrics_logging_enabled:
+            logging_dirs = ensure_logging_directories(self.participant.identity)
+            self.metrics_output_dir = logging_dirs["metrics"]
+            logger.info(f"Metrics logging enabled for user: {self.participant.identity}")
+        else:
+            logger.debug(f"Metrics logging disabled for user: {self.participant.identity}")
 
     def create_agent_state_handler(self):
         """
@@ -150,7 +163,7 @@ class SessionEventHandlers:
                 # Wait for the configured timeout period
                 await asyncio.sleep(USER_INACTIVITY_TIMEOUT_SECONDS)
                 
-                await self.session.generate_reply(user_input="[SYSTEM_CONTEXT: User inactive for too long, So you are going to close the session. say goodbye to the user.]")
+                await self.session.generate_reply(user_input="[SYSTEM_CONTEXT: User inactive for too long, So you are going to close the session. say goodbye to the user.]", allow_interruptions=False)
                 await asyncio.sleep(4)  # Allow time for goodbye message to be sent
 
                 # Use _close_soon with USER_INACTIVITY reason
@@ -429,3 +442,49 @@ class SessionEventHandlers:
         
         if parts:
             logger.info(f"🚀 Complete Metrics: {' | '.join(parts)}")
+        
+        # Save metrics to JSON file for allowed users
+        if self.metrics_logging_enabled and self.metrics_output_dir:
+            self._save_metrics_to_file()
+    
+    def _save_metrics_to_file(self):
+        """Save complete metrics to JSON file for analysis."""
+        try:
+            # Generate unique filename with timestamp
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]  # milliseconds precision
+            filename = f"{timestamp}_metrics.json"
+            filepath = os.path.join(self.metrics_output_dir, filename)
+            
+            # Prepare metrics data
+            metrics_data = {
+                "timestamp": datetime.now().isoformat(),
+                "participant_identity": self.participant.identity,
+                "agent_identity": getattr(self.ctx.room.local_participant, 'identity', 'unknown'),
+                "session_id": getattr(self.user_data, 'session_id', 'unknown'),
+                "metrics": {
+                    "e2e_latency_ms": self.e2e_latency,
+                    "stt_ms": self.stt_ms,
+                    "llm_ttft_ms": self.llm_ttft,
+                    "tts_ttfb_ms": self.tts_ttfb,
+                    "stf_ttff_ms": self.stf_ttff,
+                    "eou_ms": self.eou_ms
+                },
+                "context": {
+                    "user_language": getattr(self.agent, 'user_language', 'unknown'),
+                    "voice_name": getattr(self.agent, 'voice_name', 'unknown'),
+                    "custom_persona": getattr(self.agent, 'custom_persona', '')
+                }
+            }
+            
+            # Save as JSON
+            with open(filepath, 'w', encoding='utf-8') as f:
+                json.dump(metrics_data, f, indent=2, ensure_ascii=False)
+            
+            # Log success
+            logger.info(
+                f"[METRICS SAVED] File: {filename}, "
+                f"E2E: {self.e2e_latency:.0f}ms" if self.e2e_latency else f"[METRICS SAVED] File: {filename}"
+            )
+            
+        except Exception as e:
+            logger.error(f"Failed to save metrics to {filepath}: {e}")

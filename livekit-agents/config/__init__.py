@@ -19,6 +19,13 @@ from .language_config import (
 # Session setup  
 from .session import setup_session
 
+# Logging configuration
+from .logging_config import (
+    is_user_logging_enabled, is_tts_logging_enabled, is_metrics_logging_enabled,
+    get_tts_output_directory, get_metrics_output_directory, ensure_logging_directories,
+    get_logging_settings, get_allowed_users, ALLOWED_LOGGING_USERS, LOGGING_SETTINGS
+)
+
 __all__ = [
     # Models
     'get_stt', 'get_llm', 'get_tts', 'get_stf',
@@ -35,5 +42,10 @@ __all__ = [
     'is_supported_language', 'validate_language',
     
     # Session
-    'setup_session'
+    'setup_session',
+    
+    # Logging
+    'is_user_logging_enabled', 'is_tts_logging_enabled', 'is_metrics_logging_enabled',
+    'get_tts_output_directory', 'get_metrics_output_directory', 'ensure_logging_directories',
+    'get_logging_settings', 'get_allowed_users', 'ALLOWED_LOGGING_USERS', 'LOGGING_SETTINGS'
 ]
