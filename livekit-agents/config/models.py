@@ -14,7 +14,7 @@ def get_llm():
     return anthropic.LLM(
         model="claude-4-sonnet-20250514",
         caching="ephemeral",
-        max_tokens=256,
+        max_tokens=192,
     )
 
 

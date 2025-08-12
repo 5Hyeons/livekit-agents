@@ -39,7 +39,7 @@ class ElevenLabsConfig:
         configs = {
             "FEMALE_1": cls(
                 voice_id="uyVNoMrnUku1dZyVEXwD",
-                model="eleven_turbo_v2_5",
+                model="eleven_multilingual_v2",
                 voice_settings=VoiceSettings(
                     stability=0.5,
                     similarity_boost=0.75,
@@ -72,7 +72,7 @@ class ElevenLabsConfig:
             # Ana-Rita 
             "FEMALE_4": cls(
                 voice_id="wJqPPQ618aTW29mptyoc",
-                model="eleven_flash_v2_5",
+                model="eleven_multilingual_v2",
                 voice_settings=VoiceSettings(
                     stability=0.5,
                     similarity_boost=0.75,
@@ -123,6 +123,17 @@ class ElevenLabsConfig:
                     speed=1.00,
                 ),
             ),
+            # DK_1
+            "MALE_5": cls(
+                voice_id="YYtiEAQP6BlsFxnmUW1w",
+                model="eleven_flash_v2_5",
+                voice_settings=VoiceSettings(
+                    stability=0.75,
+                    similarity_boost=0.75,
+                    style=0.0,
+                    speed=1.0,
+                ),
+            ),
         }
         return configs.get(voice_name, configs["FEMALE_1"])
     
@@ -144,5 +155,5 @@ class ElevenLabsConfig:
             ),
             encoding="mp3_22050_32",
             auto_mode=True,
-            language="ko",
+            # language="ko",
         )
