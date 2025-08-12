@@ -1,7 +1,7 @@
 """Simple model configurations for STT, LLM, TTS, and STF."""
 
 from livekit.agents.stf import FaceAnimator, OutputMode
-from livekit.plugins import deepgram, anthropic
+from livekit.plugins import deepgram, anthropic, openai, google
 
 
 def get_stt(language: str = "ko"):
@@ -9,13 +9,27 @@ def get_stt(language: str = "ko"):
     return deepgram.STT(model="nova-2-general", language=language)
 
 
-def get_llm():
-    """Get Anthropic LLM configuration.""" 
-    return anthropic.LLM(
-        model="claude-4-sonnet-20250514",
-        caching="ephemeral",
-        max_tokens=192,
-    )
+def get_llm(model_name: str = "claude-4-sonnet-20250514"):
+    """Get LLM configuration.""" 
+    match model_name:
+        case "claude-4-sonnet-20250514":
+            return anthropic.LLM(
+                model="claude-4-sonnet-20250514",
+                caching="ephemeral",
+                max_tokens=192,
+            )
+        case "gpt-4o-mini":
+            return openai.LLM(
+                model="gpt-4o-mini",
+                max_completion_tokens=192,
+            )
+        case "gemini-2.5-pro-preview-05-06":
+            return google.LLM(
+                model="gemini-2.5-pro-preview-05-06",
+                max_output_tokens=192,
+            )
+        case _:
+            raise ValueError(f"Unsupported model: {model_name}")
 
 
 def get_tts(voice_name: str = "FEMALE_1"):

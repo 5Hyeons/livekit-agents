@@ -77,6 +77,7 @@ async def entrypoint(ctx: JobContext):
     user_language = setup_data['user_language']
     custom_persona = setup_data['custom_persona'] 
     voice_name = setup_data['voice_name']
+    model_name = setup_data['model_name']
     db = setup_data['db']
     user_data = setup_data['user_data']
     room_input_options = setup_data['room_input_options']
@@ -103,7 +104,8 @@ async def entrypoint(ctx: JobContext):
         agent_identity, 
         user_language, 
         custom_persona, 
-        voice_name
+        voice_name,
+        model_name
     )
     
     # Create event handlers

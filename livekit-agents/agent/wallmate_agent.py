@@ -43,6 +43,7 @@ class WallmateAgent(Agent):
         user_language: str = "ko",
         custom_persona: str = "",
         voice_name: str = "FEMALE_1",
+        model_name: str = "claude-4-sonnet-20250514",
     ):
         """
         Initialize WallmateAgent with user context and configuration.
@@ -55,6 +56,7 @@ class WallmateAgent(Agent):
             user_language: User's preferred language (ko, en, ja, zh)
             custom_persona: Custom personality instructions
             voice_name: Voice preset name (FEMALE_1/2, MALE_1/2)
+            model_name: LLM model name (claude-4-sonnet-20250514, gpt-4o-mini, etc.)
         """
         self.user_data = user_data
         self.db = db
@@ -98,7 +100,7 @@ class WallmateAgent(Agent):
             instructions=base_instructions,
             chat_ctx=chat_ctx,
             stt=get_stt(self.user_language),
-            llm=get_llm(),
+            llm=get_llm(model_name),
             tts=get_tts(voice_name),
             stf=get_stf(),
         )
