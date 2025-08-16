@@ -173,3 +173,4 @@ docs/
 
 # Database files
 *.db
+livekit-agents/logging/
