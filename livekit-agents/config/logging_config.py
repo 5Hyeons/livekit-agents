@@ -21,10 +21,19 @@ LOGGING_SETTINGS = {
     
     # TTS Audio Logging
     "tts_logging": {
-        "enabled": False,
+        "enabled": True,
         "directory": "tts_output",
         "create_user_folders": True,
         "log_text_input": True,
+        "save_audio_files": True
+    },
+    
+    # STT Audio Logging
+    "stt_logging": {
+        "enabled": True,
+        "directory": "stt_input",
+        "create_user_folders": True,
+        "log_transcription_output": True,
         "save_audio_files": True
     },
     
@@ -71,6 +80,22 @@ def is_tts_logging_enabled(participant_identity: str) -> bool:
     return LOGGING_SETTINGS["tts_logging"]["enabled"]
 
 
+def is_stt_logging_enabled(participant_identity: str) -> bool:
+    """
+    Check if STT logging is enabled for a specific user.
+    
+    Args:
+        participant_identity: User's participant identity
+        
+    Returns:
+        bool: True if STT logging is enabled for this user
+    """
+    if not is_user_logging_enabled(participant_identity):
+        return False
+    
+    return LOGGING_SETTINGS["stt_logging"]["enabled"]
+
+
 def is_metrics_logging_enabled(participant_identity: str) -> bool:
     """
     Check if metrics logging is enabled for a specific user.
@@ -111,6 +136,30 @@ def get_tts_output_directory(participant_identity: str) -> str | None:
         return os.path.join(base_dir, tts_dir)
 
 
+def get_stt_input_directory(participant_identity: str) -> str | None:
+    """
+    Get STT input directory path for a user.
+    
+    Args:
+        participant_identity: User's participant identity
+        
+    Returns:
+        str | None: Directory path if logging is enabled, None otherwise
+    """
+    if not is_stt_logging_enabled(participant_identity):
+        return None
+    
+    base_dir = LOGGING_SETTINGS["base_directory"]
+    stt_dir = LOGGING_SETTINGS["stt_logging"]["directory"]
+    
+    if LOGGING_SETTINGS["stt_logging"]["create_user_folders"]:
+        # Create user-specific folder
+        safe_user_id = participant_identity.replace("/", "_").replace("\\", "_")
+        return os.path.join(base_dir, stt_dir, safe_user_id)
+    else:
+        return os.path.join(base_dir, stt_dir)
+
+
 def get_metrics_output_directory(participant_identity: str) -> str | None:
     """
     Get metrics output directory path for a user.
@@ -147,6 +196,7 @@ def ensure_logging_directories(participant_identity: str) -> Dict[str, str | Non
     """
     directories = {
         "tts_output": None,
+        "stt_input": None,
         "metrics": None
     }
     
@@ -159,6 +209,16 @@ def ensure_logging_directories(participant_identity: str) -> Dict[str, str | Non
             logger.info(f"TTS logging directory ready: {tts_dir}")
         except Exception as e:
             logger.error(f"Failed to create TTS logging directory {tts_dir}: {e}")
+    
+    # Create STT input directory
+    stt_dir = get_stt_input_directory(participant_identity)
+    if stt_dir:
+        try:
+            os.makedirs(stt_dir, exist_ok=True)
+            directories["stt_input"] = stt_dir
+            logger.info(f"STT logging directory ready: {stt_dir}")
+        except Exception as e:
+            logger.error(f"Failed to create STT logging directory {stt_dir}: {e}")
     
     # Create metrics directory
     metrics_dir = get_metrics_output_directory(participant_identity)
