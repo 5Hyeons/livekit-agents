@@ -11,7 +11,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 
 # User inactivity timeout configuration
-USER_INACTIVITY_TIMEOUT_SECONDS = 60
+USER_INACTIVITY_TIMEOUT_SECONDS = 180
 from user_database import ChatMessage, UserData, UserDatabase
 from config import is_metrics_logging_enabled, get_metrics_output_directory, ensure_logging_directories
 
