@@ -17,7 +17,7 @@ from ...types import (
     NotGivenOr,
 )
 from ..events import AgentStateChangedEvent, CloseReason, UserInputTranscribedEvent
-from ..io import AudioInput, AudioOutput, TextOutput, VideoInput
+from ..io import AudioInput, AudioOutput, TextOutput, VideoInput, AnimationDataOutput
 from ..transcription import TranscriptSynchronizer
 from ._pre_connect_audio import PreConnectAudioHandler
 
@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 
 
 from ._input import _ParticipantAudioInputStream, _ParticipantVideoInputStream
-from ._output import _ParticipantAudioOutput, _ParticipantTranscriptionOutput
+from ._output import _ParticipantAudioOutput, _ParticipantTranscriptionOutput, _ParticipantAnimationOutput
 
 DEFAULT_PARTICIPANT_KINDS: list[rtc.ParticipantKind.ValueType] = [
     rtc.ParticipantKind.PARTICIPANT_KIND_SIP,
@@ -90,6 +90,7 @@ class RoomOutputOptions:
     """If not given, default to True."""
     audio_enabled: NotGivenOr[bool] = NOT_GIVEN
     """If not given, default to True."""
+    animation_enabled: bool = False
     audio_sample_rate: int = 24000
     audio_num_channels: int = 1
     audio_publish_options: rtc.TrackPublishOptions = field(
@@ -136,6 +137,7 @@ class RoomIO:
         self._user_tr_output: _ParticipantTranscriptionOutput | None = None
         self._agent_tr_output: _ParticipantTranscriptionOutput | None = None
         self._tr_synchronizer: TranscriptSynchronizer | None = None
+        self._animation_output: _ParticipantAnimationOutput | None = None
 
         self._participant_available_fut = asyncio.Future[rtc.RemoteParticipant]()
         self._room_connected_fut = asyncio.Future[None]()
@@ -197,6 +199,13 @@ class RoomIO:
                 else "roomio_audio",
             )
 
+        if self._output_options.animation_enabled:
+            # self._animation_output = self._create_animation_output(self._participant_identity)
+            is_dual_mode = self._audio_output is None
+            self._animation_output = _ParticipantAnimationOutput(
+                self._room, participant=self._participant_identity, is_dual_mode=is_dual_mode
+            )
+
         if self._output_options.transcription_enabled or not utils.is_given(
             self._output_options.transcription_enabled
         ):
@@ -246,6 +255,9 @@ class RoomIO:
 
         if self.transcription_output:
             self._agent_session.output.transcription = self.transcription_output
+
+        if self.animation_output:
+            self._agent_session.output.animation = self.animation_output
 
         self._agent_session.on("agent_state_changed", self._on_agent_state_changed)
         self._agent_session.on("user_input_transcribed", self._on_user_input_transcribed)
@@ -302,6 +314,11 @@ class RoomIO:
             return self._tr_synchronizer.text_output
 
         return self._agent_tr_output
+
+    @property
+    def animation_output(self) -> AnimationDataOutput | None:
+        """애니메이션 데이터 출력"""
+        return self._animation_output
 
     @property
     def audio_input(self) -> AudioInput | None:

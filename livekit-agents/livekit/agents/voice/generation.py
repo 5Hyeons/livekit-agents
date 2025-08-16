@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 import asyncio
 import functools
 import inspect
@@ -13,7 +14,7 @@ from pydantic import ValidationError
 
 from livekit import rtc
 
-from .. import llm, utils
+from .. import llm, utils, stf
 from ..llm import (
     ChatChunk,
     ChatContext,
@@ -221,6 +222,84 @@ async def _tts_inference_task(
 
 
 @dataclass
+class _STFGenerationData:
+    """STF 생성 데이터."""
+    anim_ch: aio.Chan[stf.AnimationData]
+
+
+def perform_stf_inference(
+    *,
+    node: Any,
+    input: AsyncIterable[rtc.AudioFrame],
+    model_settings: "ModelSettings",
+) -> tuple[asyncio.Task, _STFGenerationData]:
+    """
+    STF 모델 추론을 수행하고 애니메이션 데이터를 생성합니다.
+
+    Args:
+        node: STF 모델 노드 (Agent.stf_node)
+        input: 오디오 프레임 스트림
+        model_settings: 모델 설정
+
+    Returns:
+        tuple[asyncio.Task, _STFGenerationData]:
+            STF 생성 작업과 STF 생성 데이터를 포함하는 튜플
+    """
+    anim_ch = aio.Chan[stf.AnimationData]()
+    out = _STFGenerationData(anim_ch=anim_ch)
+    task = asyncio.create_task(_stf_inference_task(node, input, anim_ch, model_settings))
+    return task, out
+
+
+@utils.log_exceptions(logger=logger)
+async def _stf_inference_task(
+    node: Any,
+    input: AsyncIterable[rtc.AudioFrame],
+    anim_ch: aio.Chan[stf.AnimationData],
+    model_settings: "ModelSettings",
+) -> None:
+    """
+    STF 모델 추론을 수행하고 결과를 채널에 전달하는 작업입니다.
+
+    Args:
+        node: STF 모델 노드 (Agent.stf_node)
+        input: 오디오 프레임 스트림
+        anim_ch: 애니메이션 데이터 출력 채널
+        model_settings: 모델 설정
+    """
+    frames_count = 0
+    start_time = time.time()
+    # logger.info("STF 추론 작업 시작")
+
+    try:
+        # node가 코루틴인 경우 실행
+        # logger.debug("STF 노드 실행 중")
+        stf_result = node(input, model_settings)
+        if asyncio.iscoroutine(stf_result):
+            stf_result = await stf_result
+
+        # 애니메이션 데이터 생성이 없는 경우
+        if stf_result is None:
+            logger.warning("STF 결과가 없습니다. 애니메이션 데이터가 생성되지 않았습니다.")
+            return
+
+        # 각 애니메이션 데이터를 채널로 전달
+        # logger.debug("애니메이션 데이터 스트림 처리 시작")
+        async for anim_data in stf_result:
+            anim_ch.send_nowait(anim_data)
+            frames_count += 1
+            # if frames_count % 30 == 0:  # 30 프레임마다 로그 출력
+            #     logger.debug(f"STF 애니메이션 데이터 전송 중: {frames_count}개 프레임 처리됨")
+    except Exception as e:
+        logger.error(f"STF 추론 중 오류 발생: {e}", exc_info=True)
+        raise
+    finally:
+        duration = time.time() - start_time
+        # logger.info(f"STF 추론 작업 완료: {frames_count}개 애니메이션 프레임 생성, 소요 시간: {duration:.2f}초")
+        anim_ch.close()
+
+
+@dataclass
 class _TextOutput:
     text: str
     first_text_fut: asyncio.Future[None]
@@ -320,6 +399,86 @@ async def _audio_forwarding_task(
                 logger.error("error while flushing resampler", exc_info=e)
 
         audio_output.flush()
+
+
+@dataclass
+class _AnimationOutput:
+    """애니메이션 데이터 출력 클래스"""
+
+    animation: list[stf.AnimationData]
+    first_frame_fut: asyncio.Future
+
+
+def perform_animation_forwarding(
+    *,
+    animation_output: io.AnimationDataOutput,
+    stf_output: AsyncIterable[stf.AnimationData],
+) -> tuple[asyncio.Task, _AnimationOutput]:
+    """
+    STF에서 생성된 애니메이션 데이터를 출력으로 전달합니다.
+
+    Args:
+        animation_output: 애니메이션 데이터 출력 싱크
+        stf_output: STF 추론에서 생성된 애니메이션 데이터 스트림
+
+    Returns:
+        asyncio.Task: 애니메이션 데이터 전달 태스크
+        _AnimationOutput: 애니메이션 출력 데이터
+    """
+    out = _AnimationOutput(animation=[], first_frame_fut=asyncio.Future())
+    task = asyncio.create_task(_animation_forwarding_task(animation_output, stf_output, out))
+    return task, out
+
+
+@utils.log_exceptions(logger=logger)
+async def _animation_forwarding_task(
+    animation_output: io.AnimationDataOutput,
+    stf_output: AsyncIterable[stf.AnimationData],
+    out: _AnimationOutput,
+) -> None:
+    """
+    STF에서 생성된 애니메이션 데이터를 애니메이션 출력으로 전달하는
+    작업을 수행합니다.
+
+    Args:
+        animation_output: 애니메이션 데이터 출력 싱크
+        stf_output: STF 추론에서 생성된 애니메이션 데이터 스트림
+        out: 애니메이션 출력 데이터
+    """
+    frames_count = 0
+    start_time = time.time()
+    # logger.info("애니메이션 데이터 전달 작업 시작")
+
+    try:
+        async for anim_data in stf_output:
+            out.animation.append(anim_data)
+            await animation_output.capture_frame(anim_data)
+
+            # await asyncio.sleep(1 / 100)
+            frames_count += 1
+
+            # if frames_count == 1:
+            #     logger.info("첫 번째 애니메이션 프레임 전송 완료")
+
+            # if frames_count % 120 == 0:  # 120 프레임마다 로그 (약 2초 분량)
+            #     elapsed = time.time() - start_time
+            #     fps = frames_count / elapsed if elapsed > 0 else 0
+            #     logger.debug(f"애니메이션 데이터 전송 중: {frames_count}개 프레임, FPS: {fps:.1f}")
+
+            if not out.first_frame_fut.done():
+                out.first_frame_fut.set_result(None)
+                # logger.debug("첫 번째 애니메이션 프레임 전송 알림 완료")
+    except Exception as e:
+        logger.error(f"애니메이션 데이터 전송 중 오류 발생: {e}", exc_info=True)
+        raise
+    finally:
+        if isinstance(stf_output, _ACloseable):
+            await stf_output.aclose()
+
+        duration = time.time() - start_time
+        fps = frames_count / duration if duration > 0 else 0
+        # logger.info(f"애니메이션 데이터 전송 완료: {frames_count}개 프레임, 소요 시간: {duration:.2f}초, 평균 FPS: {fps:.1f}")
+        animation_output.flush()
 
 
 @dataclass
