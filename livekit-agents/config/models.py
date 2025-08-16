@@ -23,9 +23,9 @@ def get_llm(model_name: str = "claude-4-sonnet-20250514"):
                 model="gpt-4o-mini",
                 max_completion_tokens=192,
             )
-        case "gemini-2.5-pro-preview-05-06":
+        case "gemini":
             return google.LLM(
-                model="gemini-2.5-pro-preview-05-06",
+                model="gemini-2.5-flash-lite",
                 max_output_tokens=192,
             )
         case _:
