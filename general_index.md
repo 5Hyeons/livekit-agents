@@ -101,6 +101,7 @@ livekit-agents/
         │   └── tts/
         │       ├── tts.py         # TTS abstraction
         │       ├── stream_adapter.py # Streaming TTS
+        │       ├── stream_pacer.py # Lazy TTS inference
         │       └── fallback_adapter.py # TTS reliability
         │
         ├── 😊 STF (Speech-to-Face)
@@ -251,6 +252,7 @@ livekit-agents/
 |------|---------|
 | **tts/tts.py** | TTS abstraction with streaming synthesis and voice selection |
 | **tts/stream_adapter.py** | Streaming TTS adapter for real-time speech synthesis |
+| **tts/stream_pacer.py** | Lazy TTS inference with buffering to reduce interruption waste |
 | **tts/fallback_adapter.py** | TTS reliability layer with automatic provider fallback |
 
 #### 😊 STF (Speech-to-Face)
@@ -314,6 +316,7 @@ livekit-agents/
 - **Real-time Processing**: Low-latency streaming with WebRTC integration
 - **Multi-provider Support**: 35+ plugins for different AI service providers
 - **Voice Activity Detection**: Advanced VAD with configurable sensitivity
+- **Lazy TTS Inference**: Smart buffering to reduce waste from interruptions
 
 ### 🤖 Agent Intelligence
 - **Function Tools**: Decorator-based tool system with dynamic registration

@@ -12,6 +12,7 @@ LiveKit Voice Agent is a complex pipeline that processes real-time voice convers
 - **STT Model**: Speech-to-Text conversion
 - **LLM Model**: Large Language Model inference
 - **TTS Model**: Text-to-Speech conversion
+- **TTS Stream Pacer**: Lazy TTS inference with intelligent buffering
 - **Function Tools**: External functions that the LLM can invoke
 
 ## Step-by-Step Execution Flow
@@ -89,6 +90,12 @@ LLM Streaming Response Processing Loop:
 2. Custom logic is applied through Agent.tts_node()
 3. LLM text stream is input to TTS model
 
+Lazy TTS Inference (with Stream Pacer):
+- Text is buffered in SentenceStreamPacer
+- Monitors remaining audio duration (default: 5 seconds)
+- Only sends text to TTS when audio buffer is running low
+- Reduces waste from interruptions by not generating unused audio
+
 TTS Streaming Generation Loop:
 - TTS model generates audio frames with aligned transcription text
 - Forward to Room I/O through perform_audio_forwarding()
@@ -132,6 +139,13 @@ discard prepared response and regenerate with new context
 - TTS audio is also streamed to user as soon as it's generated
 - Pipeline structure minimizes overall latency
 
+### Lazy TTS Inference (Stream Pacer)
+- Intelligent text buffering before TTS generation
+- Maintains minimum audio buffer (configurable, default 5 seconds)
+- Maximum text chunk size (default 300 characters)
+- Significantly reduces TTS waste during interruptions
+- Improves speech quality by providing more context to TTS
+
 ### Adaptive Turn Detection
 - Multiple modes (VAD/STT/Realtime LLM) for context-appropriate turn detection
 - Optimized according to user speaking patterns and network conditions
@@ -139,6 +153,7 @@ discard prepared response and regenerate with new context
 ### Interruption Handling Mechanism
 - Immediate interruption detection through real-time VAD
 - Safe interruption of all ongoing generation tasks
+- Works efficiently with lazy TTS to minimize resource waste
 - Essential feature for natural conversation flow
 
 This workflow systematically manages the complexity of real-time voice conversations to provide a natural and highly responsive AI agent experience.

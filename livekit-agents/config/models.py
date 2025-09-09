@@ -25,8 +25,8 @@ def get_llm(model_name: str = "claude-4-sonnet-20250514"):
             )
         case "gemini":
             return google.LLM(
-                model="gemini-2.5-flash-lite",
-                max_output_tokens=192,
+                model="gemini-2.5-flash",
+                # max_output_tokens=192,
             )
         case _:
             raise ValueError(f"Unsupported model: {model_name}")

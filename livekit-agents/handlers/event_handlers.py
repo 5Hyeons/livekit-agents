@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 
 # User inactivity timeout configuration
 USER_INACTIVITY_TIMEOUT_SECONDS = 180
+CLOSE_SESSION_AFTER_INACTIVITY_SECONDS = 300
 from user_database import ChatMessage, UserData, UserDatabase
 from config import is_metrics_logging_enabled, get_metrics_output_directory, ensure_logging_directories
 
@@ -170,11 +171,13 @@ class SessionEventHandlers:
                 # Wait for the configured timeout period
                 await asyncio.sleep(USER_INACTIVITY_TIMEOUT_SECONDS)
                 
-                await self.session.generate_reply(user_input="[SYSTEM_CONTEXT: User inactive for too long, So you are going to close the session. say goodbye to the user.]", allow_interruptions=False)
-                await asyncio.sleep(4)  # Allow time for goodbye message to be sent
+                await self.session.generate_reply(user_input="[SYSTEM_CONTEXT: User inactive for too long, So you are going to close the session. say goodbye to the user.]", allow_interruptions=True)
+                logger.info(f"User inactive for {USER_INACTIVITY_TIMEOUT_SECONDS} seconds, say goodbye to the user and wait for {CLOSE_SESSION_AFTER_INACTIVITY_SECONDS} seconds before closing the session")
+
+                await asyncio.sleep(CLOSE_SESSION_AFTER_INACTIVITY_SECONDS)  # Wait for 5 minutes before closing the session
 
                 # Use _close_soon with USER_INACTIVITY reason
-                logger.info(f"User inactive for {USER_INACTIVITY_TIMEOUT_SECONDS} seconds, closing session")
+                logger.info(f"User inactive for {CLOSE_SESSION_AFTER_INACTIVITY_SECONDS} seconds after saying goodbye event, closing session")
                 self.session._close_soon(reason=CloseReason.USER_INACTIVITY, drain=True)
                 
             except asyncio.CancelledError:

@@ -378,7 +378,7 @@ class AgentActivity(RecognitionHooks):
                     if isinstance(self.stf, stf.STF):
                         # Connect STF metrics if the STF component supports it
                         self.stf.on("metrics_collected", self._on_metrics_collected)
-                        self.stf.prewarm()
+                        # self.stf.prewarm()
 
                     if isinstance(self.vad, vad.VAD):
                         self.vad.on("metrics_collected", self._on_metrics_collected)

@@ -196,8 +196,8 @@ class WallmateAgent(Agent):
             instructions=base_instructions,
             chat_ctx=chat_ctx,
             stt=get_stt(self.user_language),
-            llm=get_llm(model_name),
-            # llm=get_llm("gemini"),
+            # llm=get_llm(model_name),
+            llm=get_llm("gemini"),
             tts=get_tts(voice_name),
             stf=get_stf(),
         )
