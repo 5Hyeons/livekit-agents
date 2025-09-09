@@ -6,7 +6,11 @@ import uuid
 import weakref
 from collections.abc import AsyncIterable, AsyncIterator
 from enum import Enum
-from typing import Literal, Optional, Protocol, runtime_checkable
+from typing import Literal, Optional
+
+from abc import ABC
+from typing import Generic, Literal, TypeVar, Union
+
 
 import librosa
 import numpy as np
@@ -25,10 +29,21 @@ class OutputMode(str, Enum):
     ANIMATION_WITH_AUDIO = "animation_with_audio"  # Default: outputs (animation, audio) pairs
     ANIMATION_ONLY = "animation_only"  # Legacy: outputs animation data only
 
+TEvent = TypeVar("TEvent")
 
-@runtime_checkable
-class STF(Protocol):
+class STF(
+    ABC,
+    rtc.EventEmitter[Union[Literal["metrics_collected", "error"], TEvent]],
+    Generic[TEvent],):
     """Abstract base class for Speech-To-Face implementations."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._label = f"{type(self).__module__}.{type(self).__name__}"
+
+    @property
+    def label(self) -> str:
+        return self._label
 
     async def synthesize(
         self, audio_stream: AsyncIterable[rtc.AudioFrame]
@@ -415,7 +430,7 @@ class FaceAnimatorStream:
         await self.aclose()
 
 
-class FaceAnimator(STF, rtc.EventEmitter):
+class FaceAnimator(STF):
     """Unified Speech-To-Face implementation supporting multiple backends and output modes."""
     
     def __init__(
@@ -434,8 +449,6 @@ class FaceAnimator(STF, rtc.EventEmitter):
         # Output configuration
         output_mode: OutputMode | str = OutputMode.ANIMATION_WITH_AUDIO,
     ) -> None:
-        rtc.EventEmitter.__init__(self)
-        
         # Server configuration
         self._server_url = server_url
         self._model_name = model_name

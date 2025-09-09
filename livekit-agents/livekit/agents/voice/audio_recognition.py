@@ -14,7 +14,8 @@ from livekit import rtc
 from .. import llm, stt, utils, vad
 from ..log import logger
 from ..telemetry import trace_types, tracer
-from ..utils import aio
+from ..types import NOT_GIVEN, NotGivenOr
+from ..utils import aio, is_given
 from . import io
 from .agent import ModelSettings
 
@@ -54,7 +55,7 @@ class RecognitionHooks(Protocol):
     def on_start_of_speech(self, ev: vad.VADEvent) -> None: ...
     def on_vad_inference_done(self, ev: vad.VADEvent) -> None: ...
     def on_end_of_speech(self, ev: vad.VADEvent) -> None: ...
-    def on_interim_transcript(self, ev: stt.SpeechEvent) -> None: ...
+    def on_interim_transcript(self, ev: stt.SpeechEvent, *, speaking: bool | None) -> None: ...
     def on_final_transcript(self, ev: stt.SpeechEvent) -> None: ...
     def on_end_of_turn(self, info: _EndOfTurnInfo) -> bool: ...
     def on_preemptive_generation(self, info: _PreemptiveGenerationInfo) -> None: ...
@@ -104,6 +105,17 @@ class AudioRecognition:
         self._tasks: set[asyncio.Task[Any]] = set()
 
         self._user_turn_span: trace.Span | None = None
+
+    def update_options(
+        self,
+        *,
+        min_endpointing_delay: NotGivenOr[float] = NOT_GIVEN,
+        max_endpointing_delay: NotGivenOr[float] = NOT_GIVEN,
+    ) -> None:
+        if is_given(min_endpointing_delay):
+            self._min_endpointing_delay = min_endpointing_delay
+        if is_given(max_endpointing_delay):
+            self._max_endpointing_delay = max_endpointing_delay
 
     def start(self) -> None:
         self.update_stt(self._stt)
@@ -242,7 +254,6 @@ class AudioRecognition:
             return
 
         if ev.type == stt.SpeechEventType.FINAL_TRANSCRIPT:
-            self._hooks.on_final_transcript(ev)
             transcript = ev.alternatives[0].text
             language = ev.alternatives[0].language
             confidence = ev.alternatives[0].confidence
@@ -255,11 +266,11 @@ class AudioRecognition:
             if not transcript:
                 return
 
-            logger.debug(f"🗣️ received user transcript: ----\"{transcript}\"---- with confidence: {confidence} 🎤")
-            # logger.debug(
-            #     "received user transcript",
-            #     extra={"user_transcript": transcript, "language": self._last_language},
-            # )
+            self._hooks.on_final_transcript(ev)
+            logger.debug(
+                "🗣️ received user transcript 🎤",
+                extra={"user_transcript": transcript, "language": self._last_language},
+            )
 
             self._last_final_transcript_time = time.time()
             self._audio_transcript += f" {transcript}"
@@ -294,7 +305,7 @@ class AudioRecognition:
                     self._run_eou_detection(chat_ctx)
 
         elif ev.type == stt.SpeechEventType.INTERIM_TRANSCRIPT:
-            self._hooks.on_interim_transcript(ev)
+            self._hooks.on_interim_transcript(ev, speaking=self._speaking if self._vad else None)
             self._audio_interim_transcript = ev.alternatives[0].text
 
         elif ev.type == stt.SpeechEventType.END_OF_SPEECH and self._turn_detection_mode == "stt":
