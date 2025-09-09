@@ -449,6 +449,8 @@ class FaceAnimator(STF):
         # Output configuration
         output_mode: OutputMode | str = OutputMode.ANIMATION_WITH_AUDIO,
     ) -> None:
+        super().__init__()  # 부모 클래스 초기화 호출
+        
         # Server configuration
         self._server_url = server_url
         self._model_name = model_name
