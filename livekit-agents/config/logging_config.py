@@ -10,7 +10,7 @@ logger = logging.getLogger("logging-config")
 
 # Allowed users for comprehensive logging
 ALLOWED_LOGGING_USERS = [
-    "user-7bf5e21059d2",
+    # "user-7bf5e21059d2",
     # Add more users as needed
 ]
 
