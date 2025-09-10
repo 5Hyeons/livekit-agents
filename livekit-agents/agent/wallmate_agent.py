@@ -197,7 +197,7 @@ class WallmateAgent(Agent):
             chat_ctx=chat_ctx,
             stt=get_stt(self.user_language),
             # llm=get_llm(model_name),
-            llm=get_llm("gemini"),
+            llm=get_llm("langgraph", db=self.db, user_data=self.user_data),
             tts=get_tts(voice_name),
             stf=get_stf(),
         )
@@ -261,29 +261,29 @@ class WallmateAgent(Agent):
             await self.session.generate_reply(user_input=system_context, allow_interruptions=False)
             logger.info("Generated new user greeting")
 
-    @function_tool
-    async def save_user_name(self, name: str) -> str:
-        """
-        Save user's name when they introduce themselves.
+    # @function_tool
+    # async def save_user_name(self, name: str) -> str:
+    #     """
+    #     Save user's name when they introduce themselves.
 
-        Args:
-            name: The user's name
+    #     Args:
+    #         name: The user's name
 
-        Returns:
-            Confirmation message in user's language
-        """
-        # Prevent duplicate saves
-        if self.user_data.display_name and self.user_data.display_name == name:
-            logger.info(f"Name already saved: {name}")
-            return ""
+    #     Returns:
+    #         Confirmation message in user's language
+    #     """
+    #     # Prevent duplicate saves
+    #     if self.user_data.display_name and self.user_data.display_name == name:
+    #         logger.info(f"Name already saved: {name}")
+    #         return ""
 
-        # Update database and local data
-        self.db.update_user_name(self.user_data.participant_id, name)
-        self.user_data.display_name = name
-        logger.info(f"User name saved: {self.user_data.participant_id} -> {name}")
+    #     # Update database and local data
+    #     self.db.update_user_name(self.user_data.participant_id, name)
+    #     self.user_data.display_name = name
+    #     logger.info(f"User name saved: {self.user_data.participant_id} -> {name}")
 
-        # Return system context for the agent to acknowledge
-        return f"[SYSTEM_CONTEXT: User introduced themselves as '{name}'. Acknowledge this naturally and continue the conversation.]"
+    #     # Return system context for the agent to acknowledge
+    #     return f"[SYSTEM_CONTEXT: User introduced themselves as '{name}'. Acknowledge this naturally and continue the conversation.]"
     
     def _save_audio_frames_as_wav(self, audio_frames: list[AudioFrame], text_context: str = "", 
                                   audio_type: str = "tts"):
