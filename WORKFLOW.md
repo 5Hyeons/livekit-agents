@@ -5,25 +5,30 @@ LiveKit Voice Agent is a complex pipeline that processes real-time voice convers
 
 ## Core Components
 - **AgentSession**: Manages overall session and WebRTC connections
-- **Agent**: Handles custom logic and hook processing
+- **Agent**: Handles custom logic and hook processing with LangGraph integration
 - **AgentActivity**: Manages the lifecycle of a single conversation turn
 - **AudioRecognition**: Voice recognition through VAD and STT
 - **VAD Model**: Voice Activity Detection
 - **STT Model**: Speech-to-Text conversion
-- **LLM Model**: Large Language Model inference
+- **LLM Model**: Large Language Model inference via LangGraph with MongoDB checkpointer
+- **MongoDB Checkpointer**: Persistent conversation memory and state management
+- **LangGraph Tools**: Function tools with persistent execution context
 - **TTS Model**: Text-to-Speech conversion
 - **TTS Stream Pacer**: Lazy TTS inference with intelligent buffering
-- **Function Tools**: External functions that the LLM can invoke
 
 ## Step-by-Step Execution Flow
 
 ### Step 1: Session Initialization and Agent Startup
 ```
-1. AgentSession creates Room I/O and establishes WebRTC connection
-2. Agent.on_enter() method is called
-3. Agent speaks initial greeting (e.g., "Hello!")
-4. AgentActivity instance is created and AudioRecognition is initialized
-5. Audio/video forwarding tasks are started
+1. MongoDB connection is established and tested
+2. User profile is retrieved/created from MongoDB Store with token balance (default: 10,000 tokens)
+3. LangGraph with MongoDB checkpointer is initialized for the user
+4. Thread-specific configuration is created (thread_id: "user_{participant_id}")
+5. AgentSession creates Room I/O and establishes WebRTC connection with token info in userdata
+6. Agent.on_enter() method is called with persistent memory context
+7. Agent speaks initial greeting (e.g., "Hello!")
+8. AgentActivity instance is created and AudioRecognition is initialized
+9. Audio/video forwarding tasks are started
 ```
 
 ### Step 2: User Voice Input Processing
@@ -67,24 +72,26 @@ Turn Detection Mode Processing:
 5. AgentActivity._generate_reply() starts
 ```
 
-### Step 5: LLM Inference and Function Tools Execution
+### Step 5: LLM Inference with LangGraph and MongoDB Memory
 ```
 1. AgentActivity._pipeline_reply_task() starts
 2. perform_llm_inference() is called
 3. Custom logic is applied through Agent.llm_node()
-4. Streaming inference request is sent to LLM model
+4. LangGraph processes the request with MongoDB checkpointer context
 
-LLM Streaming Response Processing Loop:
-- Text chunk received → Forward to text stream
-- Function Call request received → Call perform_tool_executions()
-  - Execute requested functions in parallel
-  - Add execution results to LLM context
-  - LLM continues inference based on function results
+LangGraph Processing with Persistent Memory:
+- Current conversation state is loaded from MongoDB checkpointer
+- User message is added to the persistent conversation thread
+- LLM processes message with full conversation history
+- Tool calls are detected and routed to ToolNode
+- Tools execute with persistent context (e.g., save_user_name_langgraph)
+- Tool results are added to conversation and persisted
+- Final response is generated and conversation state is saved to MongoDB
 
-5. LLM inference completes
+5. LLM inference completes with automatic state persistence
 ```
 
-### Step 6: TTS Generation and Audio Output
+### Step 6: TTS Generation, Token Deduction, and Audio Output
 ```
 1. perform_tts_inference() is called
 2. Custom logic is applied through Agent.tts_node()
@@ -96,8 +103,13 @@ Lazy TTS Inference (with Stream Pacer):
 - Only sends text to TTS when audio buffer is running low
 - Reduces waste from interruptions by not generating unused audio
 
-TTS Streaming Generation Loop:
+TTS Streaming Generation Loop with Token Deduction:
 - TTS model generates audio frames with aligned transcription text
+- TTS metrics are captured including character count
+- Real-time token deduction: characters_used = tokens_to_deduct (1:1 ratio)
+- Token balance updated in session.userdata["token_info"]
+- Token status checked against thresholds (Normal >500, Low ≤500, Critical ≤200, Depleted 0)
+- RPC notification sent to client if token status worsens
 - Forward to Room I/O through perform_audio_forwarding()
 - Output audio stream and transcription text simultaneously
 
@@ -125,6 +137,25 @@ When preemptive_generation is enabled:
 
 Caveat: If user changes their statement or provides additional information,
 discard prepared response and regenerate with new context
+```
+
+### Step 9: Session Closure and Token Persistence
+```
+When session ends (user disconnect, timeout, or error):
+1. Session close event is triggered with reason (USER_LEFT, USER_INACTIVITY, etc.)
+2. Final token balance is retrieved from session.userdata["token_info"]
+3. UserProfileManager.update_token_balance() saves complete token state to MongoDB Store
+4. Final token statistics are logged (remaining, total_used, total_granted)
+5. RPC notification sent to client about session closure
+6. MongoDB checkpointer automatically persists conversation state
+7. Session cleanup and resource deallocation
+8. Room connection is terminated
+
+Token Persistence Details:
+- Token balance is maintained in memory during session for performance
+- Only final state is written to MongoDB to minimize database writes
+- Cross-session continuity: Next session loads saved token balance
+- Token usage statistics are preserved for analytics and billing
 ```
 
 ## Key Design Features
@@ -157,3 +188,47 @@ discard prepared response and regenerate with new context
 - Essential feature for natural conversation flow
 
 This workflow systematically manages the complexity of real-time voice conversations to provide a natural and highly responsive AI agent experience.
+
+## MongoDB Memory & Token Management Architecture
+
+### Dual-Purpose MongoDB System
+The system uses a sophisticated dual-layer architecture built on MongoDB for both memory management and token tracking:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│              MongoDB Dual-Purpose System                   │
+├─────────────────────────────────────────────────────────────┤
+│  Short-term Memory (MongoDB Checkpointer)                  │
+│  - Conversation threads per user                           │
+│  - Message history with timestamps                         │
+│  - Tool execution results                                  │
+│  - Session state and context                              │
+│                                                           │
+│  Long-term Store (MongoDB Store)                          │
+│  - User profiles with token balances                      │
+│  - Token usage tracking (total_granted, total_used)       │
+│  - Cross-session user preferences                         │
+│  - Persistent user data and relationship tracking         │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Thread & Token Management
+- **Thread ID Format**: `user_{participant_id}` for unique user identification
+- **Automatic Persistence**: All messages and tool results are automatically saved
+- **Session Continuity**: Users can resume conversations with token balance across sessions
+- **Context Loading**: Previous conversation history and token balance loaded on session start
+- **Token Balance**: Default 10,000 tokens allocated to new users
+
+### Real-Time Token Processing
+- **Character-Based Billing**: 1 TTS character = 1 token deduction
+- **Session Memory**: Token balance maintained in `session.userdata["token_info"]` for performance
+- **Real-Time Alerts**: Client notifications when token status changes (Normal→Low→Critical→Depleted)
+- **Persistence Strategy**: Final token state saved to MongoDB Store at session end only
+
+### Tool Integration with Memory & Tokens
+- **Persistent Tool Context**: Tools like `save_user_name_langgraph` store results in conversation memory
+- **Cross-Tool Communication**: Tool results are available to subsequent tool calls
+- **Memory-Aware Responses**: LLM responses consider both immediate context and persistent memory
+- **Token-Aware Processing**: System monitors token usage to prevent service interruption
+
+This architecture ensures that the agent maintains context and learns from user interactions while providing consistent, personalized responses and accurate token tracking across sessions.

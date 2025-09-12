@@ -8,19 +8,23 @@ livekit-agents/
 │   ├── main.py                    # Main Wallmate Agent orchestration
 │   └── user_database.py           # SQLite user data management
 │
-├── 🤖 Agent Core
-│   └── agent/
-│       ├── __init__.py            # Agent package exports
-│       └── wallmate_agent.py      # Core agent with face animation
+├── 🤖 Core Business Logic
+│   └── core/
+│       ├── __init__.py            # Core package exports
+│       ├── wallmate_agent.py      # Core agent with face animation
+│       ├── graph_builder.py       # LangGraph configuration and tools
+│       ├── model_factory.py       # Model factory functions
+│       ├── mongodb_manager.py     # MongoDB connection management
+│       ├── user_profile.py        # User profile management
+│       └── session_manager.py     # Session setup and configuration
 │
 ├── ⚙️ Configuration System
 │   └── config/
 │       ├── __init__.py            # Config package exports
-│       ├── models.py              # Simple model functions (STT, LLM, TTS, STF)
 │       ├── voices.py              # ElevenLabs voice presets
-│       ├── session.py             # Simple session setup utilities
-│       ├── persona_config.py      # Dynamic persona instructions
-│       └── language_config.py     # Multilingual language mapping
+│       ├── personas.py            # Dynamic persona instructions
+│       ├── languages.py           # Multilingual language mapping
+│       └── logging.py             # Logging configuration
 │
 ├── 📡 Event & Communication
 │   └── handlers/
@@ -132,40 +136,38 @@ livekit-agents/
 
 | File | Purpose |
 |------|---------|
-| **main.py** | Main orchestration entry point for Wallmate Agent with session setup, event handling, and RPC registration |
-| **user_database.py** | SQLite-based user data management with chat history, metadata, and session tracking |
+| **main.py** | Main orchestration entry point for Wallmate Agent with MongoDB integration, user profile loading, token balance initialization, session setup, event handling, and RPC registration |
 
-### 🤖 Agent Core
+### 🤖 Core Business Logic
 
 | File | Purpose |
 |------|---------|
-| **agent/__init__.py** | Agent package exports for WallmateAgent |
-| **agent/wallmate_agent.py** | Core agent implementation with multilingual support, face animation, and conversation history management |
+| **core/__init__.py** | Core package exports for business logic and infrastructure |
+| **core/wallmate_agent.py** | Core agent implementation with multilingual support, face animation, and LangGraph-MongoDB memory integration |
+| **core/graph_builder.py** | LangGraph configuration, tools creation, and MongoDB checkpointer + store integration |
+| **core/model_factory.py** | Factory functions for STT, TTS, STF, and LangGraph models |
+| **core/mongodb_manager.py** | MongoDB connection management, dual-purpose checkpointer and store setup for memory and token management |
+| **core/user_profile.py** | User profile CRUD operations and token balance management with MongoDB Store (default 10,000 tokens) |
+| **core/session_manager.py** | Session setup, metadata parsing, and room configuration |
 
 ### ⚙️ Configuration System
 
 | File | Purpose |
 |------|---------|
-| **config/__init__.py** | Configuration package exports for voice, language, and session settings |
-| **config/base_instructions.py** | Dynamic persona-based instruction generation with system context handling |
-| **config/language_config.py** | Language mapping utilities for Korean, English, Japanese, and Chinese support |
-| **config/session_config.py** | Session timeout, room configuration, and agent behavior settings |
-| **config/voice_config.py** | ElevenLabs TTS voice presets and configuration management |
+| **config/__init__.py** | Configuration package exports for voice, language, persona, and logging settings |
+| **config/voices.py** | ElevenLabs TTS voice presets and configuration management |
+| **config/personas.py** | Dynamic persona-based instruction generation with system context handling |
+| **config/languages.py** | Language mapping utilities for Korean, English, Japanese, and Chinese support |
+| **config/logging.py** | Logging configuration for STT, TTS, and metrics tracking |
 
-### 🔗 Core Session Management
-
-| File | Purpose |
-|------|---------|
-| **core/__init__.py** | Core package exports for session setup utilities |
-| **core/session_setup.py** | Comprehensive session initialization with metadata parsing and room configuration |
 
 ### 📡 Event & Communication Handlers
 
 | File | Purpose |
 |------|---------|
 | **handlers/__init__.py** | Event and RPC handler package exports |
-| **handlers/event_handlers.py** | Comprehensive session event handling with metrics tracking and chat history management |
-| **handlers/rpc_handlers.py** | RPC method handlers for client-agent communication including text input and chat clearing |
+| **handlers/event_handlers.py** | Comprehensive session event handling with real-time token deduction (1 character = 1 token), token status monitoring, RPC notifications, and MongoDB persistence |
+| **handlers/rpc_handlers.py** | RPC method handlers for client-agent communication including text input, agent interruption, and attention checks |
 
 ### 🛠️ Utilities & Extensions
 
@@ -336,8 +338,18 @@ livekit-agents/
 - **Fallback Systems**: Automatic provider fallback for reliability
 - **Health Monitoring**: Process supervision and resource monitoring
 
-### 💾 Data Management
-- **Conversation History**: Persistent chat history with SQLite database
-- **User Management**: Comprehensive user data and session tracking
-- **Security Features**: Path traversal prevention and SQL injection protection
+### 💾 Data Management & Memory System
+- **MongoDB Integration**: LangGraph checkpointer with MongoDB for persistent conversation memory
+- **Dual Memory Architecture**: Short-term memory via MongoDB checkpointer, long-term store for extended context
+- **Thread-Based Persistence**: User-specific conversation threads with automatic state management
+- **Tool Integration**: LangGraph tools with MongoDB persistence (e.g., user name storage)
 - **Session Lifecycle**: Complete lifecycle with timeout handling and cleanup
+
+### 💰 Token Management System
+- **Character-Based Billing**: 1 TTS character = 1 token deduction model
+- **Real-Time Deduction**: Immediate token deduction during TTS processing
+- **Session Memory**: Token balance maintained in session userdata for performance
+- **MongoDB Persistence**: Final token state saved to database at session end
+- **Status Monitoring**: Three-tier alert system (Normal >500, Low ≤500, Critical ≤200, Depleted 0)
+- **RPC Notifications**: Real-time client alerts when token status changes (only on status deterioration)
+- **Default Allocation**: New users receive 10,000 tokens upon profile creation
