@@ -7,7 +7,6 @@ from typing import TYPE_CHECKING
 
 from livekit import rtc
 from livekit.agents.voice.agent_session import AgentSession
-from user_database import UserDatabase
 
 if TYPE_CHECKING:
     pass
@@ -26,7 +25,7 @@ class RPCHandlers:
     - Chat history management
     """
 
-    def __init__(self, session: AgentSession, db: UserDatabase):
+    def __init__(self, session: AgentSession):
         """
         Initialize RPC handlers.
 
@@ -35,7 +34,6 @@ class RPCHandlers:
             db: UserDatabase instance for data operations
         """
         self.session = session
-        self.db = db
 
     def create_interrupt_handler(self):
         """
@@ -119,66 +117,66 @@ class RPCHandlers:
         
         return send_text_input
     
-    def create_clear_chat_history_handler(self):
-        """
-        Create chat history clearing RPC handler.
+    # def create_clear_chat_history_handler(self):
+    #     """
+    #     Create chat history clearing RPC handler.
         
-        Returns:
-            Async function to handle chat history clearing requests
-        """
+    #     Returns:
+    #         Async function to handle chat history clearing requests
+    #     """
         
-        async def clear_chat_history(data: rtc.RpcInvocationData) -> str:
-            """Handle client request to clear chat history."""
-            logger.info(f"RPC 'clear_chat_history' called by: {data.caller_identity}")
+    #     async def clear_chat_history(data: rtc.RpcInvocationData) -> str:
+    #         """Handle client request to clear chat history."""
+    #         logger.info(f"RPC 'clear_chat_history' called by: {data.caller_identity}")
             
-            try:
-                import json
+    #         try:
+    #             import json
                 
-                # Clear chat history from database
-                deleted_count = self.db.clear_chat_history()
+    #             # Clear chat history from database
+    #             deleted_count = self.db.clear_chat_history()
                 
-                # Clear current session's chat context while preserving system message
-                try:
-                    agent = self.session.current_agent
-                    current_ctx = agent.chat_ctx
+    #             # Clear current session's chat context while preserving system message
+    #             try:
+    #                 agent = self.session.current_agent
+    #                 current_ctx = agent.chat_ctx
                     
-                    # Find system message
-                    system_message = None
-                    for item in current_ctx.items:
-                        if (item.type == "message" and 
-                            hasattr(item, 'role') and 
-                            item.role == "system"):
-                            system_message = item
-                            break
+    #                 # Find system message
+    #                 system_message = None
+    #                 for item in current_ctx.items:
+    #                     if (item.type == "message" and 
+    #                         hasattr(item, 'role') and 
+    #                         item.role == "system"):
+    #                         system_message = item
+    #                         break
                     
-                    # Create new context with only system message
-                    from livekit.agents.llm import ChatContext
-                    new_ctx = ChatContext.empty()
-                    if system_message:
-                        new_ctx.items.append(system_message)
+    #                 # Create new context with only system message
+    #                 from livekit.agents.llm import ChatContext
+    #                 new_ctx = ChatContext.empty()
+    #                 if system_message:
+    #                     new_ctx.items.append(system_message)
                     
-                    # Update agent's chat context
-                    await agent.update_chat_ctx(new_ctx)
+    #                 # Update agent's chat context
+    #                 await agent.update_chat_ctx(new_ctx)
                     
-                    logger.info("Successfully reset session chat context")
-                    context_message = " 현재 세션의 대화 컨텍스트도 초기화되었습니다."
+    #                 logger.info("Successfully reset session chat context")
+    #                 context_message = " 현재 세션의 대화 컨텍스트도 초기화되었습니다."
                     
-                except Exception as ctx_error:
-                    logger.warning(f"Failed to reset session chat context: {ctx_error}")
-                    context_message = " (현재 세션의 컨텍스트 초기화는 실패했습니다)"
+    #             except Exception as ctx_error:
+    #                 logger.warning(f"Failed to reset session chat context: {ctx_error}")
+    #                 context_message = " (현재 세션의 컨텍스트 초기화는 실패했습니다)"
                 
-                return json.dumps({
-                    "status": "success", 
-                    "deleted_count": deleted_count,
-                    "message": f"{deleted_count}개의 채팅 기록이 삭제되었습니다{context_message}"
-                })
+    #             return json.dumps({
+    #                 "status": "success", 
+    #                 "deleted_count": deleted_count,
+    #                 "message": f"{deleted_count}개의 채팅 기록이 삭제되었습니다{context_message}"
+    #             })
                 
-            except Exception as e:
-                logger.error(f"Error clearing chat history: {e}")
-                import json
-                return json.dumps({"status": "error", "message": str(e)})
+    #         except Exception as e:
+    #             logger.error(f"Error clearing chat history: {e}")
+    #             import json
+    #             return json.dumps({"status": "error", "message": str(e)})
         
-        return clear_chat_history
+    #     return clear_chat_history
 
     def register_all_methods(self, local_participant: rtc.LocalParticipant):
         """
@@ -195,8 +193,8 @@ class RPCHandlers:
         local_participant.register_rpc_method(
             "send_text_input", self.create_send_text_input_handler()
         )
-        local_participant.register_rpc_method(
-            "clear_chat_history", self.create_clear_chat_history_handler()
-        )
+        # local_participant.register_rpc_method(
+        #     "clear_chat_history", self.create_clear_chat_history_handler()
+        # )
 
         logger.info("RPC methods registered: interrupt_agent, check_attention, send_text_input, clear_chat_history")

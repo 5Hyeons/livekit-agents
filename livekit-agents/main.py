@@ -20,14 +20,14 @@ from livekit.agents import (
     JobProcess,
     WorkerOptions,
     cli,
-    metrics,
+    metrics,  # Temporarily disabled
 )
 from livekit.agents.voice.agent_session import AgentSession
 from livekit.plugins import silero
 
 from agent.wallmate_agent import WallmateAgent
 from config import setup_session
-from handlers.event_handlers import SessionEventHandlers
+from handlers.event_handlers import SessionEventHandlers  # Temporarily disabled
 from handlers.rpc_handlers import RPCHandlers
 
 # Load environment variables
@@ -78,8 +78,8 @@ async def entrypoint(ctx: JobContext):
     custom_persona = setup_data['custom_persona'] 
     voice_name = setup_data['voice_name']
     model_name = setup_data['model_name']
-    db = setup_data['db']
-    user_data = setup_data['user_data']
+    # db = setup_data['db']  # No longer needed with MongoDB Checkpointer
+    # user_data = setup_data['user_data']  # No longer needed with MongoDB Checkpointer
     room_input_options = setup_data['room_input_options']
     room_output_options = setup_data['room_output_options']
     
@@ -89,41 +89,37 @@ async def entrypoint(ctx: JobContext):
         preemptive_generation=False,
         )
     
-    # Create usage collector for metrics
+    # Create usage collector for metrics (temporarily disabled)
     usage_collector = metrics.UsageCollector()
     
     # Get identity information
     participant_identity = participant.identity
     agent_identity = ctx.room.local_participant.identity
     
-    # Create agent instance
+    # Create agent instance (MongoDB version)
     agent = WallmateAgent(
-        user_data, 
-        db, 
         participant_identity, 
-        agent_identity, 
+        agent_identity,
         user_language, 
         custom_persona, 
         voice_name,
         model_name
     )
     
-    # Create event handlers
+    # Create event handlers (MongoDB version)
+    # Event handlers temporarily disabled - MongoDB Checkpointer handles core functionality
     event_handlers = SessionEventHandlers(
         ctx=ctx,
-        agent=agent,
         session=session,
+        agent=agent,
         participant=participant,
-        db=db,
-        user_data=user_data,
         usage_collector=usage_collector
     )
-    
-    # Register event handlers
     session.on("agent_state_changed", event_handlers.create_agent_state_handler())
     session.on("user_state_changed", event_handlers.create_user_state_handler())
     session.on("metrics_collected", event_handlers.create_metrics_handler())
-    session.on("close", event_handlers.create_session_close_handler())
+    session.on("session_close", event_handlers.create_session_close_handler())
+    
     
     # Log agent identity
     agent_identity = ctx.room.local_participant.identity
@@ -137,8 +133,8 @@ async def entrypoint(ctx: JobContext):
         room_output_options=room_output_options
     )
     
-    # Create and register RPC handlers
-    rpc_handlers = RPCHandlers(session, db)
+    # Create and register RPC handlers (MongoDB version - simplified)
+    rpc_handlers = RPCHandlers(session)
     rpc_handlers.register_all_methods(ctx.room.local_participant)
     
     logger.info("Wallmate agent started successfully")

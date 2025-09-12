@@ -16,7 +16,6 @@ from config import (
     is_stt_logging_enabled, get_stt_input_directory,
     ensure_logging_directories
 )
-from user_database import UserData, UserDatabase
 
 from livekit.agents import utils
 from livekit.agents import stt
@@ -128,8 +127,6 @@ class WallmateAgent(Agent):
 
     def __init__(
         self,
-        user_data: UserData,
-        db: UserDatabase,
         participant_identity: str,
         agent_identity: str,
         user_language: str = "ko",
@@ -138,11 +135,9 @@ class WallmateAgent(Agent):
         model_name: str = "claude-4-sonnet-20250514",
     ):
         """
-        Initialize WallmateAgent with user context and configuration.
+        Initialize WallmateAgent with MongoDB-based memory.
 
         Args:
-            user_data: User data from database
-            db: Database instance for persistence
             participant_identity: Identity of the participant
             agent_identity: Identity of the agent
             user_language: User's preferred language (ko, en, ja, zh)
@@ -150,13 +145,10 @@ class WallmateAgent(Agent):
             voice_name: Voice preset name (FEMALE_1/2, MALE_1/2)
             model_name: LLM model name (claude-4-sonnet-20250514, gpt-4o-mini, etc.)
         """
-        self.user_data = user_data
-        self.db = db
         self.participant_identity = participant_identity
         self.agent_identity = agent_identity
         self.user_language = user_language
         self.custom_persona = custom_persona
-        self._preloaded_message_count = 120  # Number of messages to load from history
         
         # Initialize logging directories for this user
         self.logging_enabled = (is_tts_logging_enabled(self.participant_identity) or 
@@ -183,13 +175,11 @@ class WallmateAgent(Agent):
             self.user_language, custom_persona=self.custom_persona
         )
 
-        # Load previous conversation history into chat context
-        chat_ctx = self._prepare_chat_context_with_history(self._preloaded_message_count)
-        self._preloaded_message_count = len(chat_ctx.items)
+        # Create empty chat context (MongoDB Checkpointer will handle history)
+        from livekit.agents.llm import ChatContext
+        chat_ctx = ChatContext()
         
-        logger.info(
-            f"Loaded {self._preloaded_message_count} messages from conversation history"
-        )
+        logger.info("Using MongoDB Checkpointer for conversation history")
 
         # Initialize parent Agent with simple config
         super().__init__(
@@ -197,94 +187,35 @@ class WallmateAgent(Agent):
             chat_ctx=chat_ctx,
             stt=get_stt(self.user_language),
             # llm=get_llm(model_name),
-            llm=get_llm("langgraph", db=self.db, user_data=self.user_data),
+            llm=get_llm("langgraph", user_data=self._create_user_data()),
             tts=get_tts(voice_name),
             stf=get_stf(),
         )
+    
+    def _create_user_data(self):
+        """Create minimal user data object for MongoDB integration."""
+        class SimpleUserData:
+            def __init__(self, participant_id):
+                self.participant_id = participant_id
+        
+        return SimpleUserData(self.participant_identity)
 
-    def _prepare_chat_context_with_history(self, message_count: int):
-        """
-        Prepare chat context with previous conversation history.
-
-        Args:
-            message_count: Number of messages to load from history
-
-        Returns:
-            ChatContext with loaded conversation history
-        """
-        # Import ChatContext from llm module
-        from livekit.agents.llm import ChatContext
-
-        # Create new chat context
-        chat_ctx = ChatContext()
-
-        # Get recent conversation context
-        context = self.db.get_recent_context(
-            self.user_data.participant_id, message_count=message_count
-        )
-
-        if not context:
-            return chat_ctx
-
-        # Parse context and add to chat_ctx
-        lines = context.split("\n")
-        for line in lines:
-            if line.startswith("user: "):
-                content = line[6:]  # Remove "user: " prefix
-                if content.strip():
-                    chat_ctx.add_message(role="user", content=content)
-            elif line.startswith("assistant: "):
-                content = line[11:]  # Remove "assistant: " prefix
-                if content.strip():
-                    chat_ctx.add_message(role="assistant", content=content)
-            # Skip separator lines like "---"
-
-        return chat_ctx
+    # Legacy method - no longer used with MongoDB Checkpointer
+    # MongoDB automatically handles conversation history through checkpoints
     
 
     async def on_enter(self):
         """
         Handle agent entry into conversation session.
-
-        Generates appropriate greeting based on whether user is new or returning.
+        MongoDB Checkpointer will automatically restore conversation context.
         """
-        logger.info(f"WallmateAgent entering session for user: {self.user_data.participant_id}")
+        logger.info(f"WallmateAgent entering session for user: {self.participant_identity}")
+        
+        # Generate greeting (MongoDB Checkpointer will handle personalization)
+        system_context = "[SYSTEM_CONTEXT: User joined the conversation. Greet naturally based on conversation history.]"
+        await self.session.generate_reply(user_input=system_context, allow_interruptions=False)
+        logger.info(f"Generated greeting for: {self.participant_identity}")
 
-        if self.user_data.display_name:
-            # Returning user - generate personalized greeting
-            system_context = f"[SYSTEM_CONTEXT: User '{self.user_data.display_name}' just joined. You've met before. Greet naturally.]"
-            await self.session.generate_reply(user_input=system_context, allow_interruptions=False)
-            logger.info(f"Generated returning user greeting for: {self.user_data.display_name}")
-        else:
-            # New user - generate introduction greeting
-            system_context = "[SYSTEM_CONTEXT: User just joined. This is first meeting. Introduce yourself naturally.]"
-            await self.session.generate_reply(user_input=system_context, allow_interruptions=False)
-            logger.info("Generated new user greeting")
-
-    # @function_tool
-    # async def save_user_name(self, name: str) -> str:
-    #     """
-    #     Save user's name when they introduce themselves.
-
-    #     Args:
-    #         name: The user's name
-
-    #     Returns:
-    #         Confirmation message in user's language
-    #     """
-    #     # Prevent duplicate saves
-    #     if self.user_data.display_name and self.user_data.display_name == name:
-    #         logger.info(f"Name already saved: {name}")
-    #         return ""
-
-    #     # Update database and local data
-    #     self.db.update_user_name(self.user_data.participant_id, name)
-    #     self.user_data.display_name = name
-    #     logger.info(f"User name saved: {self.user_data.participant_id} -> {name}")
-
-    #     # Return system context for the agent to acknowledge
-    #     return f"[SYSTEM_CONTEXT: User introduced themselves as '{name}'. Acknowledge this naturally and continue the conversation.]"
-    
     def _save_audio_frames_as_wav(self, audio_frames: list[AudioFrame], text_context: str = "", 
                                   audio_type: str = "tts"):
         """

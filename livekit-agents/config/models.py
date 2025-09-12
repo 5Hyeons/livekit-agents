@@ -12,53 +12,53 @@ from langgraph.prebuilt import ToolNode
 from livekit.agents.stf import FaceAnimator, OutputMode
 from livekit.plugins import deepgram, anthropic, openai, google, langchain
 
+from config.mongodb_config import get_checkpointer, test_mongodb_connection
+
 logger = logging.getLogger("models-config")
 
-# 전역 변수로 데이터베이스 접근을 위한 참조 저장
-_current_db = None
-_current_user_data = None
+# MongoDB Checkpointer를 위한 전역 변수
+_current_participant_id = None
 
 @tool
 def save_user_name_langgraph(name: str) -> str:
     """
-    Save user's name when they introduce themselves (LangGraph version).
+    Save user's name when they introduce themselves.
     
     Args:
         name: The user's name to save
+    
+    Note: Currently stores only in conversation context (checkpointer).
+    Long-term storage will be implemented later.
     """
-    global _current_db, _current_user_data
+    global _current_participant_id
     
-    if not _current_db or not _current_user_data:
-        logger.error("[LangGraph Tool] Database or user data not available")
-        return "[ERROR: Database not available]"
+    if not _current_participant_id:
+        logger.error("[LangGraph Tool] Participant ID not available")
+        return "[ERROR: Session not available]"
     
-    # 중복 저장 방지
-    if _current_user_data.display_name and _current_user_data.display_name == name:
-        logger.info(f"[LangGraph Tool] Name already saved: {name}")
-        return ""
-    
-    # 데이터베이스 업데이트
-    _current_db.update_user_name(_current_user_data.participant_id, name)
-    _current_user_data.display_name = name
-    logger.info(f"[LangGraph Tool] User name saved: {_current_user_data.participant_id} -> {name}")
-    
-    return f"Successfully saved your name as '{name}'. Nice to meet you, {name}!"
+    # For now, just acknowledge the name without permanent storage
+    logger.info(f"[LangGraph Tool] User name noted: {_current_participant_id} -> {name}")
+    return f"Nice to meet you, {name}! I'll remember your name during our conversation."
 
 class State(TypedDict):
     messages: Annotated[list[BaseMessage], add_messages]
 
-# Complete StateGraph with chatbot and tool nodes
-def create_graph(db=None, user_data=None) -> StateGraph:
-    global _current_db, _current_user_data
+def create_graph_with_mongodb(participant_id: str = None) -> StateGraph:
+    """Create LangGraph with MongoDB checkpointer only (short-term memory)."""
+    global _current_participant_id
     
-    # 전역 참조 설정 (LangGraph 도구에서 사용)
-    if db and user_data:
-        _current_db = db
-        _current_user_data = user_data
-        logger.info(f"[LangGraph] Database and user data set for: {user_data.participant_id}")
+    # MongoDB 연결 테스트
+    if not test_mongodb_connection():
+        raise ConnectionError("MongoDB connection failed")
+    
+    _current_participant_id = participant_id
+    
+    if participant_id:
+        logger.info(f"[LangGraph] MongoDB checkpointer initialized for: {participant_id}")
     else:
-        logger.warning("[LangGraph] No database or user data provided - tools may not work properly")
+        logger.warning("[LangGraph] No participant_id provided for MongoDB memory")
     
+    # 채팅 모델 초기화 - Claude 사용
     chat_model = init_chat_model(
         model="google_genai:gemini-2.5-flash",
     )
@@ -68,7 +68,7 @@ def create_graph(db=None, user_data=None) -> StateGraph:
     llm_with_tools = chat_model.bind_tools(tools=tools, tool_choice="auto")
     logger.info(f"[LangGraph] Tools bound to model: {[tool.name for tool in tools]}")
 
-    # 채팅봇 노드 (LLM이 도구 호출 결정)
+    # 채팅봇 노드
     def chatbot_node(state: State):
         response = llm_with_tools.invoke(state["messages"])
         return {"messages": [response]}
@@ -81,11 +81,9 @@ def create_graph(db=None, user_data=None) -> StateGraph:
         """도구 호출이 필요한지 확인하고 라우팅"""
         last_message = state["messages"][-1]
         
-        # LLM이 도구 호출을 했다면 tools 노드로
         if hasattr(last_message, 'tool_calls') and last_message.tool_calls:
             logger.info(f"[LangGraph] Tool calls detected: {[tc['name'] for tc in last_message.tool_calls]}")
             return "tools"
-        # 아니면 종료
         logger.debug("[LangGraph] No tool calls, ending conversation turn")
         return "end"
 
@@ -104,17 +102,20 @@ def create_graph(db=None, user_data=None) -> StateGraph:
             "end": END,
         }
     )
-    builder.add_edge("tools", "chatbot")  # 도구 실행 후 다시 LLM으로
+    builder.add_edge("tools", "chatbot")
     
-    logger.info("[LangGraph] Graph compiled with chatbot -> conditional -> tools -> chatbot cycle")
-    return builder.compile()
+    # MongoDB checkpointer만 사용 (단기 메모리)
+    checkpointer = get_checkpointer()
+    
+    logger.info("[LangGraph] Graph compiled with MongoDB checkpointer only")
+    return builder.compile(checkpointer=checkpointer)
 
 
 def get_stt(language: str = "ko"):
     """Get Deepgram STT configuration."""
     return deepgram.STT(model="nova-2-general", language=language)
 
-def get_llm(model_name: str = "claude-4-sonnet-20250514", db=None, user_data=None):
+def get_llm(model_name: str = "claude-4-sonnet-20250514", user_data=None):
     """Get LLM configuration.""" 
     match model_name:
         case "claude-4-sonnet-20250514":
@@ -134,8 +135,18 @@ def get_llm(model_name: str = "claude-4-sonnet-20250514", db=None, user_data=Non
                 # max_output_tokens=192,
             )
         case "langgraph":
-            graph = create_graph(db=db, user_data=user_data)
-            return langchain.LLMAdapter(graph)
+            participant_id = user_data.participant_id if user_data else None
+            graph = create_graph_with_mongodb(participant_id=participant_id)
+            
+            # Thread-based configuration for MongoDB persistence
+            config = {
+                "configurable": {
+                    "thread_id": f"user_{participant_id}" if participant_id else "default_thread",
+                    "user_id": participant_id
+                }
+            }
+            
+            return langchain.LLMAdapter(graph, config=config)
         case _:
             raise ValueError(f"Unsupported model: {model_name}")
 
