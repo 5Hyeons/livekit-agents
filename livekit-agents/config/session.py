@@ -19,7 +19,8 @@ def parse_metadata(participant: rtc.RemoteParticipant) -> Dict[str, Any]:
         'user_language': 'ko',
         'custom_persona': '',
         'voice_name': 'FEMALE_1',
-        'model_name': 'claude-4-sonnet-20250514'  # Default Claude model
+        'model_name': 'claude', 
+        'scene_name': 'default_scene'
     }
     
     if not participant.metadata:
@@ -31,7 +32,8 @@ def parse_metadata(participant: rtc.RemoteParticipant) -> Dict[str, Any]:
             'user_language': validate_language(metadata.get('userLanguage', 'ko')),
             'custom_persona': metadata.get('customPersona', '').strip(),
             'voice_name': metadata.get('voiceName', 'FEMALE_1').strip() or 'FEMALE_1',
-            'model_name': metadata.get('modelName', 'claude-4-sonnet-20250514').strip() or 'claude-4-sonnet-20250514'
+            'model_name': metadata.get('modelName', 'claude').strip() or 'claude',
+            'scene_name': metadata.get('sceneName', 'default_scene').strip() or 'default_scene'
         }
     except (json.JSONDecodeError, Exception) as e:
         logger.warning(f"Metadata parsing error: {e}, using defaults")
@@ -77,6 +79,7 @@ def setup_session(participant: rtc.RemoteParticipant) -> Dict[str, Any]:
     logger.info(f"Session setup complete - Language: {config['user_language']}, "
                f"Voice: {config['voice_name']}, "
                f"Model: {config['model_name']}, "
+               f"Scene: {config['scene_name']}, "
                f"Custom persona: {'yes' if config['custom_persona'] else 'no'}")
     
     return {
@@ -84,6 +87,7 @@ def setup_session(participant: rtc.RemoteParticipant) -> Dict[str, Any]:
         'custom_persona': config['custom_persona'],
         'voice_name': config['voice_name'],
         'model_name': config['model_name'],
+        'scene_name': config['scene_name'],
         'db': db,
         'user_data': user_data,
         'room_input_options': room_input,

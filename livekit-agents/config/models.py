@@ -10,61 +10,82 @@ from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 
 from livekit.agents.stf import FaceAnimator, OutputMode
-from livekit.plugins import deepgram, anthropic, openai, google, langchain
+from livekit.plugins import deepgram, langchain
 
-from config.mongodb_config import get_checkpointer, test_mongodb_connection
+from config.mongodb_config import get_checkpointer, get_store, test_mongodb_connection
 
 logger = logging.getLogger("models-config")
 
-# MongoDB Checkpointer를 위한 전역 변수
-_current_participant_id = None
+# LangGraph 지원 모델 설정
+MODEL_CONFIGS = {
+    "gemini": "google_genai:gemini-2.5-flash",
+    "claude": "anthropic:claude-sonnet-4-20250514",
+}
 
-@tool
-def save_user_name_langgraph(name: str) -> str:
-    """
-    Save user's name when they introduce themselves.
+def create_tools_for_participant(participant_id: str) -> list:
+    """Create tools with participant_id bound via closure."""
     
-    Args:
-        name: The user's name to save
-    
-    Note: Currently stores only in conversation context (checkpointer).
-    Long-term storage will be implemented later.
-    """
-    global _current_participant_id
-    
-    if not _current_participant_id:
-        logger.error("[LangGraph Tool] Participant ID not available")
-        return "[ERROR: Session not available]"
-    
-    # For now, just acknowledge the name without permanent storage
-    logger.info(f"[LangGraph Tool] User name noted: {_current_participant_id} -> {name}")
-    return f"Nice to meet you, {name}! I'll remember your name during our conversation."
+    @tool
+    def save_user_name(name: str) -> str:
+        """
+        Save user's name when they introduce themselves.
+        
+        Args:
+            name: The user's name to save
+        
+        Updates permanently in MongoDB Store. Will be reflected in next session.
+        """
+        if not participant_id:
+            return "[SYSTEM_CONTEXT: Unable to save name - session error.]"
+        
+        from datetime import datetime
+        store = get_store()
+        
+        # Get existing profile
+        profile_data = store.get(
+            namespace=("user_profile", participant_id),
+            key="basic_info"
+        )
+        
+        # Update existing profile
+        updated_profile = profile_data.value
+        updated_profile["name"] = name
+        updated_profile["last_seen"] = datetime.now().isoformat()
+        
+        # Save updated profile to MongoDB Store
+        store.put(
+            namespace=("user_profile", participant_id),
+            key="basic_info",
+            value=updated_profile
+        )
+        
+        logger.info(f"[LongTerm] Updated user name: {profile_data.value['name']} -> {name}")
+        return f"[SYSTEM_CONTEXT: User '{name}' introduced themselves. Remember their name and respond naturally.]"
+            
+    return [save_user_name]
 
 class State(TypedDict):
     messages: Annotated[list[BaseMessage], add_messages]
 
-def create_graph_with_mongodb(participant_id: str = None) -> StateGraph:
+def create_graph_with_mongodb(model_name: str, participant_id: str = None) -> StateGraph:
     """Create LangGraph with MongoDB checkpointer only (short-term memory)."""
-    global _current_participant_id
-    
     # MongoDB 연결 테스트
     if not test_mongodb_connection():
         raise ConnectionError("MongoDB connection failed")
     
-    _current_participant_id = participant_id
-    
-    if participant_id:
-        logger.info(f"[LangGraph] MongoDB checkpointer initialized for: {participant_id}")
+    # 모델 설정 확인
+    if model_name not in MODEL_CONFIGS:
+        raise ValueError(f"Unsupported model: {model_name}. Available: {list(MODEL_CONFIGS.keys())}")
     else:
-        logger.warning("[LangGraph] No participant_id provided for MongoDB memory")
+        logger.info(f"[LangGraph] 🤖 Using model: {model_name} 🤖")
     
-    # 채팅 모델 초기화 - Claude 사용
+    # 채팅 모델 초기화
     chat_model = init_chat_model(
-        model="google_genai:gemini-2.5-flash",
+        model=MODEL_CONFIGS[model_name],
     )
     
-    # 도구를 모델에 바인딩
-    tools = [save_user_name_langgraph]
+    # 참가자별 도구 생성
+    tools = create_tools_for_participant(participant_id)
     llm_with_tools = chat_model.bind_tools(tools=tools, tool_choice="auto")
     logger.info(f"[LangGraph] Tools bound to model: {[tool.name for tool in tools]}")
 
@@ -104,51 +125,33 @@ def create_graph_with_mongodb(participant_id: str = None) -> StateGraph:
     )
     builder.add_edge("tools", "chatbot")
     
-    # MongoDB checkpointer만 사용 (단기 메모리)
+    # MongoDB checkpointer + store 사용 (단기 + 장기 메모리)
     checkpointer = get_checkpointer()
+    store = get_store()
     
-    logger.info("[LangGraph] Graph compiled with MongoDB checkpointer only")
-    return builder.compile(checkpointer=checkpointer)
+    logger.info("[LangGraph] Graph compiled with MongoDB checkpointer and store")
+    return builder.compile(checkpointer=checkpointer, store=store)
 
 
 def get_stt(language: str = "ko"):
     """Get Deepgram STT configuration."""
     return deepgram.STT(model="nova-2-general", language=language)
 
-def get_llm(model_name: str = "claude-4-sonnet-20250514", user_data=None):
-    """Get LLM configuration.""" 
-    match model_name:
-        case "claude-4-sonnet-20250514":
-            return anthropic.LLM(
-                model="claude-4-sonnet-20250514",
-                caching="ephemeral",
-                max_tokens=192,
-            )
-        case "gpt-4o-mini":
-            return openai.LLM(
-                model="gpt-4o-mini",
-                max_completion_tokens=192,
-            )
-        case "gemini":
-            return google.LLM(
-                model="gemini-2.5-flash",
-                # max_output_tokens=192,
-            )
-        case "langgraph":
-            participant_id = user_data.participant_id if user_data else None
-            graph = create_graph_with_mongodb(participant_id=participant_id)
-            
-            # Thread-based configuration for MongoDB persistence
-            config = {
-                "configurable": {
-                    "thread_id": f"user_{participant_id}" if participant_id else "default_thread",
-                    "user_id": participant_id
-                }
-            }
-            
-            return langchain.LLMAdapter(graph, config=config)
-        case _:
-            raise ValueError(f"Unsupported model: {model_name}")
+def get_langgraph(model_name: str = "gemini", scene_name: str = "default_scene", participant_id: str = None):
+    """Get LangGraph LLM with MongoDB checkpointer.""" 
+    
+    graph = create_graph_with_mongodb(model_name=model_name, participant_id=participant_id)
+    
+    # Thread-based configuration for MongoDB persistence
+    thread_id = f"{scene_name}_{participant_id}"
+    config = {
+        "configurable": {
+            "thread_id": thread_id,
+            "user_id": participant_id
+        }
+    }
+    
+    return langchain.LLMAdapter(graph, config=config)
 
 
 def get_tts(voice_name: str = "FEMALE_1"):

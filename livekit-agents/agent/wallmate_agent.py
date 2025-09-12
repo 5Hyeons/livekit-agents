@@ -11,9 +11,9 @@ import asyncio
 import threading
 
 from config import (
-    get_stt, get_llm, get_tts, get_stf, create_instructions,
-    is_tts_logging_enabled, get_tts_output_directory, 
-    is_stt_logging_enabled, get_stt_input_directory,
+    get_stt, get_langgraph, get_tts, get_stf, create_instructions,
+    is_tts_logging_enabled,
+    is_stt_logging_enabled,
     ensure_logging_directories
 )
 
@@ -129,10 +129,7 @@ class WallmateAgent(Agent):
         self,
         participant_identity: str,
         agent_identity: str,
-        user_language: str = "ko",
-        custom_persona: str = "",
-        voice_name: str = "FEMALE_1",
-        model_name: str = "claude-4-sonnet-20250514",
+        setup_data: dict,
     ):
         """
         Initialize WallmateAgent with MongoDB-based memory.
@@ -140,16 +137,16 @@ class WallmateAgent(Agent):
         Args:
             participant_identity: Identity of the participant
             agent_identity: Identity of the agent
-            user_language: User's preferred language (ko, en, ja, zh)
-            custom_persona: Custom personality instructions
-            voice_name: Voice preset name (FEMALE_1/2, MALE_1/2)
-            model_name: LLM model name (claude-4-sonnet-20250514, gpt-4o-mini, etc.)
+            setup_data: Setup data containing user language, custom persona, voice name, model name, and scene name
         """
         self.participant_identity = participant_identity
         self.agent_identity = agent_identity
-        self.user_language = user_language
-        self.custom_persona = custom_persona
-        
+        # self.user_language = setup_data['user_language']
+        # self.custom_persona = setup_data['custom_persona']
+        # self.voice_name = setup_data['voice_name']
+        # self.model_name = setup_data['model_name']
+        # self.scene_name = setup_data['scene_name']
+
         # Initialize logging directories for this user
         self.logging_enabled = (is_tts_logging_enabled(self.participant_identity) or 
                                is_stt_logging_enabled(self.participant_identity))
@@ -165,14 +162,14 @@ class WallmateAgent(Agent):
             self.stt_input_dir = None
             logger.debug(f"Audio logging disabled for user: {self.participant_identity}")
 
-        if self.custom_persona:
-            logger.info(f"Use Custom persona: {self.custom_persona}")
+        if setup_data['custom_persona']:
+            logger.info(f"Use Custom persona: {setup_data['custom_persona']}")
 
         # Performance tracking is now handled in event_handlers.py
 
         # Create base instructions with persona
         base_instructions = create_instructions(
-            self.user_language, custom_persona=self.custom_persona
+            setup_data['user_language'], custom_persona=setup_data['custom_persona']
         )
 
         # Create empty chat context (MongoDB Checkpointer will handle history)
@@ -185,36 +182,30 @@ class WallmateAgent(Agent):
         super().__init__(
             instructions=base_instructions,
             chat_ctx=chat_ctx,
-            stt=get_stt(self.user_language),
-            # llm=get_llm(model_name),
-            llm=get_llm("langgraph", user_data=self._create_user_data()),
-            tts=get_tts(voice_name),
+            stt=get_stt(setup_data['user_language']),
+            llm=get_langgraph(model_name=setup_data['model_name'], scene_name=setup_data['scene_name'], participant_id=self.participant_identity),
+            tts=get_tts(setup_data['voice_name']),
             stf=get_stf(),
         )
-    
-    def _create_user_data(self):
-        """Create minimal user data object for MongoDB integration."""
-        class SimpleUserData:
-            def __init__(self, participant_id):
-                self.participant_id = participant_id
-        
-        return SimpleUserData(self.participant_identity)
-
-    # Legacy method - no longer used with MongoDB Checkpointer
     # MongoDB automatically handles conversation history through checkpoints
     
 
     async def on_enter(self):
         """
         Handle agent entry into conversation session.
-        MongoDB Checkpointer will automatically restore conversation context.
+        Uses userdata to personalize greeting based on stored user profile.
         """
         logger.info(f"WallmateAgent entering session for user: {self.participant_identity}")
         
-        # Generate greeting (MongoDB Checkpointer will handle personalization)
-        system_context = "[SYSTEM_CONTEXT: User joined the conversation. Greet naturally based on conversation history.]"
+        # Get user profile from session userdata
+        user_profile = self.session.userdata
+        user_name = user_profile.get('name')
+        
+        # Generate personalized system context
+        system_context = f"[SYSTEM_CONTEXT: The user just joined. User name is {user_name}. Respond naturally.]"
+        logger.info(f"The User just joined: User name is {user_name}")
+        
         await self.session.generate_reply(user_input=system_context, allow_interruptions=False)
-        logger.info(f"Generated greeting for: {self.participant_identity}")
 
     def _save_audio_frames_as_wav(self, audio_frames: list[AudioFrame], text_context: str = "", 
                                   audio_type: str = "tts"):

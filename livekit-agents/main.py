@@ -27,12 +27,64 @@ from livekit.plugins import silero
 
 from agent.wallmate_agent import WallmateAgent
 from config import setup_session
+from config.mongodb_config import get_store, test_mongodb_connection
 from handlers.event_handlers import SessionEventHandlers  # Temporarily disabled
 from handlers.rpc_handlers import RPCHandlers
 
 # Load environment variables
 load_dotenv()
 logger = logging.getLogger("wallmate-main")
+
+
+def get_or_create_user_profile(participant_id: str) -> dict:
+    """
+    Get existing user profile or create a new one.
+    
+    Args:
+        participant_id: The participant's identity
+    
+    Returns:
+        User profile data dictionary
+    """
+    if not participant_id:
+        return {"name": "Unknown"}
+    
+    store = get_store()
+    
+    # Try to get existing profile
+    profile_data = store.get(
+        namespace=("user_profile", participant_id),
+        key="basic_info"
+    )
+    
+    if profile_data and profile_data.value:
+        logger.info(f"[UserProfile] Loaded existing profile for: {participant_id}")
+        return profile_data.value
+    else:
+        # Create new profile with default values
+        from datetime import datetime
+        new_profile = {
+            "name": "Unknown",
+            "created_at": datetime.now().isoformat(),
+            "last_seen": datetime.now().isoformat(),
+            "token_info": {
+                "total_granted": 10000,
+                "total_used": 0,
+                "remaining": 10000,
+                "status": "normal"
+            }
+        }
+        
+        # Save to MongoDB Store
+        store.put(
+            namespace=("user_profile", participant_id),
+            key="basic_info",
+            value=new_profile
+        )
+        
+        logger.info(f"[UserProfile] Created new profile for: {participant_id}")
+        return new_profile
+            
 
 
 def prewarm(proc: JobProcess):
@@ -73,37 +125,32 @@ async def entrypoint(ctx: JobContext):
     # Setup session configuration
     setup_data = setup_session(participant)
     
-    # Extract setup data
-    user_language = setup_data['user_language']
-    custom_persona = setup_data['custom_persona'] 
-    voice_name = setup_data['voice_name']
-    model_name = setup_data['model_name']
-    # db = setup_data['db']  # No longer needed with MongoDB Checkpointer
-    # user_data = setup_data['user_data']  # No longer needed with MongoDB Checkpointer
+    # Extract room input and output options
     room_input_options = setup_data['room_input_options']
     room_output_options = setup_data['room_output_options']
-    
-    # Create agent session
-    session = AgentSession(
-        vad=ctx.proc.userdata["vad"],
-        preemptive_generation=False,
-        )
-    
-    # Create usage collector for metrics (temporarily disabled)
-    usage_collector = metrics.UsageCollector()
     
     # Get identity information
     participant_identity = participant.identity
     agent_identity = ctx.room.local_participant.identity
     
+    # Get or create user profile
+    user_profile = get_or_create_user_profile(participant_identity)
+    
+    # Create agent session
+    session = AgentSession(
+        vad=ctx.proc.userdata["vad"],
+        preemptive_generation=False,
+        userdata=user_profile
+        )
+    
+    # Create usage collector for metrics (temporarily disabled)
+    usage_collector = metrics.UsageCollector()
+    
     # Create agent instance (MongoDB version)
     agent = WallmateAgent(
         participant_identity, 
         agent_identity,
-        user_language, 
-        custom_persona, 
-        voice_name,
-        model_name
+        setup_data
     )
     
     # Create event handlers (MongoDB version)

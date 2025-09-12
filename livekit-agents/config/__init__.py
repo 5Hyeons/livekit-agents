@@ -1,7 +1,7 @@
 """Simple configuration package for LiveKit agents."""
 
 # Simple model functions
-from .models import get_stt, get_llm, get_tts, get_stf
+from .models import get_stt, get_langgraph, get_tts, get_stf
 
 # Persona configuration
 from .persona_config import create_instructions
@@ -28,7 +28,7 @@ from .logging_config import (
 
 __all__ = [
     # Models
-    'get_stt', 'get_llm', 'get_tts', 'get_stf',
+    'get_stt', 'get_langgraph', 'get_tts', 'get_stf',
     
     # Persona 
     'create_instructions',
