@@ -7,10 +7,10 @@ from typing import Dict, Any
 from livekit import rtc
 from livekit.agents.voice.room_io.room_io import RoomInputOptions, RoomOutputOptions
 
-from user_database import UserDatabase
-from config.language_config import validate_language
+# from user_database import UserDatabase
+from config.languages import validate_language
 
-logger = logging.getLogger("session")
+logger = logging.getLogger("session-manager")
 
 
 def parse_metadata(participant: rtc.RemoteParticipant) -> Dict[str, Any]:
@@ -64,15 +64,6 @@ def setup_session(participant: rtc.RemoteParticipant) -> Dict[str, Any]:
     # Parse metadata
     config = parse_metadata(participant)
     
-    # Setup user database
-    db = UserDatabase(participant.identity)
-    user_data = db.get_or_create_user(participant.identity)
-    
-    # Update user language if changed
-    if user_data.language != config['user_language']:
-        db.update_user_language(participant.identity, config['user_language'])
-        user_data.language = config['user_language']
-    
     # Create room options
     room_input, room_output = create_room_options(participant)
     
@@ -88,8 +79,6 @@ def setup_session(participant: rtc.RemoteParticipant) -> Dict[str, Any]:
         'voice_name': config['voice_name'],
         'model_name': config['model_name'],
         'scene_name': config['scene_name'],
-        'db': db,
-        'user_data': user_data,
         'room_input_options': room_input,
         'room_output_options': room_output
     }

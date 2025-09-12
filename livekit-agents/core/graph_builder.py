@@ -1,6 +1,7 @@
-"""Simple model configurations for STT, LLM, TTS, and STF."""
-from typing import Annotated, TypedDict
+"""LangGraph configuration and tools for conversation management."""
+
 import logging
+from typing import Annotated, TypedDict
 
 from langchain.chat_models import init_chat_model
 from langchain_core.messages import BaseMessage
@@ -8,13 +9,12 @@ from langchain.tools import tool
 from langgraph.graph import START, StateGraph, END
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
+from livekit.plugins import langchain
 
-from livekit.agents.stf import FaceAnimator, OutputMode
-from livekit.plugins import deepgram, langchain
+from .user_profile import UserProfileManager
+from .mongodb_manager import MongoDBManager
 
-from config.mongodb_config import get_checkpointer, get_store, test_mongodb_connection
-
-logger = logging.getLogger("models-config")
+logger = logging.getLogger("graph-builder")
 
 # LangGraph 지원 모델 설정
 MODEL_CONFIGS = {
@@ -22,8 +22,13 @@ MODEL_CONFIGS = {
     "claude": "anthropic:claude-sonnet-4-20250514",
 }
 
-def create_tools_for_participant(participant_id: str) -> list:
-    """Create tools with participant_id bound via closure."""
+
+class State(TypedDict):
+    messages: Annotated[list[BaseMessage], add_messages]
+
+
+def create_tools(participant_id: str, mongodb_manager: MongoDBManager) -> list:
+    """Create LangGraph tools with participant_id bound via closure."""
     
     @tool
     def save_user_name(name: str) -> str:
@@ -38,40 +43,30 @@ def create_tools_for_participant(participant_id: str) -> list:
         if not participant_id:
             return "[SYSTEM_CONTEXT: Unable to save name - session error.]"
         
-        from datetime import datetime
-        store = get_store()
+        success = UserProfileManager.update_user_name(participant_id, name, mongodb_manager.store)
         
-        # Get existing profile
-        profile_data = store.get(
-            namespace=("user_profile", participant_id),
-            key="basic_info"
-        )
-        
-        # Update existing profile
-        updated_profile = profile_data.value
-        updated_profile["name"] = name
-        updated_profile["last_seen"] = datetime.now().isoformat()
-        
-        # Save updated profile to MongoDB Store
-        store.put(
-            namespace=("user_profile", participant_id),
-            key="basic_info",
-            value=updated_profile
-        )
-        
-        logger.info(f"[LongTerm] Updated user name: {profile_data.value['name']} -> {name}")
-        return f"[SYSTEM_CONTEXT: User '{name}' introduced themselves. Remember their name and respond naturally.]"
-            
+        if success:
+            return f"[SYSTEM_CONTEXT: User '{name}' introduced themselves. Remember their name and respond naturally.]"
+        else:
+            logger.error(f"[LangGraph Tool] Failed to save name for {participant_id}")
+            return f"[SYSTEM_CONTEXT: User '{name}' introduced themselves. Remember their name and respond naturally.]"
+    
     return [save_user_name]
 
-class State(TypedDict):
-    messages: Annotated[list[BaseMessage], add_messages]
 
-def create_graph_with_mongodb(model_name: str, participant_id: str = None) -> StateGraph:
-    """Create LangGraph with MongoDB checkpointer only (short-term memory)."""
-    # MongoDB 연결 테스트
-    if not test_mongodb_connection():
-        raise ConnectionError("MongoDB connection failed")
+def create_graph_with_mongodb(model_name: str, participant_id: str, mongodb_manager) -> StateGraph:
+    """Create LangGraph with MongoDB checkpointer and store.
+    
+    Args:
+        model_name: Name of the model to use
+        participant_id: Participant identifier
+        mongodb_manager: MongoDBManager instance
+    """
+    
+    if participant_id:
+        logger.info(f"[LangGraph] MongoDB checkpointer initialized for: {participant_id}")
+    else:
+        logger.warning("[LangGraph] No participant_id provided for MongoDB memory")
     
     # 모델 설정 확인
     if model_name not in MODEL_CONFIGS:
@@ -84,8 +79,8 @@ def create_graph_with_mongodb(model_name: str, participant_id: str = None) -> St
         model=MODEL_CONFIGS[model_name],
     )
     
-    # 참가자별 도구 생성
-    tools = create_tools_for_participant(participant_id)
+    # 참가자별 도구 생성 (store 전달)
+    tools = create_tools(participant_id, mongodb_manager)
     llm_with_tools = chat_model.bind_tools(tools=tools, tool_choice="auto")
     logger.info(f"[LangGraph] Tools bound to model: {[tool.name for tool in tools]}")
 
@@ -125,22 +120,23 @@ def create_graph_with_mongodb(model_name: str, participant_id: str = None) -> St
     )
     builder.add_edge("tools", "chatbot")
     
-    # MongoDB checkpointer + store 사용 (단기 + 장기 메모리)
-    checkpointer = get_checkpointer()
-    store = get_store()
+    # MongoDB checkpointer 사용 (단기 메모리)
+    checkpointer = mongodb_manager.checkpointer
     
     logger.info("[LangGraph] Graph compiled with MongoDB checkpointer and store")
-    return builder.compile(checkpointer=checkpointer, store=store)
+    return builder.compile(checkpointer=checkpointer, store=mongodb_manager.store)
 
 
-def get_stt(language: str = "ko"):
-    """Get Deepgram STT configuration."""
-    return deepgram.STT(model="nova-2-general", language=language)
-
-def get_langgraph(model_name: str = "gemini", scene_name: str = "default_scene", participant_id: str = None):
+def get_langgraph(model_name: str = "gemini", scene_name: str = "default_scene", participant_id: str = None, mongodb_manager = None):
     """Get LangGraph LLM with MongoDB checkpointer.""" 
+    if model_name not in MODEL_CONFIGS:
+        raise ValueError(f"Unsupported model: {model_name}. Available: {list(MODEL_CONFIGS.keys())}")
     
-    graph = create_graph_with_mongodb(model_name=model_name, participant_id=participant_id)
+    graph = create_graph_with_mongodb(
+        model_name=model_name, 
+        participant_id=participant_id,
+        mongodb_manager=mongodb_manager
+    )
     
     # Thread-based configuration for MongoDB persistence
     thread_id = f"{scene_name}_{participant_id}"
@@ -152,17 +148,3 @@ def get_langgraph(model_name: str = "gemini", scene_name: str = "default_scene",
     }
     
     return langchain.LLMAdapter(graph, config=config)
-
-
-def get_tts(voice_name: str = "FEMALE_1"):
-    """Get ElevenLabs TTS configuration."""
-    from config.voices import ElevenLabsConfig
-    return ElevenLabsConfig.from_voice_name(voice_name).create_tts()
-
-
-def get_stf():
-    """Get FaceAnimator STF configuration."""
-    return FaceAnimator(
-        chunk_duration_sec=2.0, 
-        output_mode=OutputMode.ANIMATION_ONLY
-    )

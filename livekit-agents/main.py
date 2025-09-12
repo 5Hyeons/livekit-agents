@@ -9,6 +9,7 @@ This module provides the main entry point and orchestrates all components:
 """
 
 import logging
+import os
 
 # Set higher logging level for Numba before other configurations
 logging.getLogger('numba').setLevel(logging.WARNING)
@@ -25,9 +26,10 @@ from livekit.agents import (
 from livekit.agents.voice.agent_session import AgentSession
 from livekit.plugins import silero
 
-from agent.wallmate_agent import WallmateAgent
-from config import setup_session
-from config.mongodb_config import get_store, test_mongodb_connection
+from core.wallmate_agent import WallmateAgent
+from core.session_manager import setup_session
+from core.user_profile import UserProfileManager
+from core.mongodb_manager import MongoDBManager
 from handlers.event_handlers import SessionEventHandlers  # Temporarily disabled
 from handlers.rpc_handlers import RPCHandlers
 
@@ -35,56 +37,6 @@ from handlers.rpc_handlers import RPCHandlers
 load_dotenv()
 logger = logging.getLogger("wallmate-main")
 
-
-def get_or_create_user_profile(participant_id: str) -> dict:
-    """
-    Get existing user profile or create a new one.
-    
-    Args:
-        participant_id: The participant's identity
-    
-    Returns:
-        User profile data dictionary
-    """
-    if not participant_id:
-        return {"name": "Unknown"}
-    
-    store = get_store()
-    
-    # Try to get existing profile
-    profile_data = store.get(
-        namespace=("user_profile", participant_id),
-        key="basic_info"
-    )
-    
-    if profile_data and profile_data.value:
-        logger.info(f"[UserProfile] Loaded existing profile for: {participant_id}")
-        return profile_data.value
-    else:
-        # Create new profile with default values
-        from datetime import datetime
-        new_profile = {
-            "name": "Unknown",
-            "created_at": datetime.now().isoformat(),
-            "last_seen": datetime.now().isoformat(),
-            "token_info": {
-                "total_granted": 10000,
-                "total_used": 0,
-                "remaining": 10000,
-                "status": "normal"
-            }
-        }
-        
-        # Save to MongoDB Store
-        store.put(
-            namespace=("user_profile", participant_id),
-            key="basic_info",
-            value=new_profile
-        )
-        
-        logger.info(f"[UserProfile] Created new profile for: {participant_id}")
-        return new_profile
-            
 
 
 def prewarm(proc: JobProcess):
@@ -122,6 +74,17 @@ async def entrypoint(ctx: JobContext):
     participant = await ctx.wait_for_participant()
     logger.info(f"Starting wallmate agent for participant: {participant.identity}")
     
+    # Initialize MongoDB Manager with environment variables
+    mongodb_uri = os.getenv("MONGODB_URI")
+    mongodb_database = os.getenv("MONGODB_DATABASE")
+    
+    mongodb_manager = MongoDBManager(uri=mongodb_uri, database=mongodb_database)
+    if not mongodb_manager.test_connection():
+        logger.error(f"Failed to connect to MongoDB: {mongodb_uri}")
+        raise ConnectionError("MongoDB connection failed")
+    
+    logger.info(f"MongoDB connected successfully to database: {mongodb_database}")
+    
     # Setup session configuration
     setup_data = setup_session(participant)
     
@@ -133,8 +96,11 @@ async def entrypoint(ctx: JobContext):
     participant_identity = participant.identity
     agent_identity = ctx.room.local_participant.identity
     
-    # Get or create user profile
-    user_profile = get_or_create_user_profile(participant_identity)
+    # Get or create user profile with MongoDB store
+    user_profile = UserProfileManager.get_or_create_profile(
+        participant_identity,
+        mongodb_manager.store
+    )
     
     # Create agent session
     session = AgentSession(
@@ -146,11 +112,12 @@ async def entrypoint(ctx: JobContext):
     # Create usage collector for metrics (temporarily disabled)
     usage_collector = metrics.UsageCollector()
     
-    # Create agent instance (MongoDB version)
+    # Create agent instance with MongoDB manager
     agent = WallmateAgent(
         participant_identity, 
         agent_identity,
-        setup_data
+        setup_data,
+        mongodb_manager
     )
     
     # Create event handlers (MongoDB version)

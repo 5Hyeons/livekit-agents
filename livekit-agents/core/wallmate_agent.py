@@ -11,11 +11,13 @@ import asyncio
 import threading
 
 from config import (
-    get_stt, get_langgraph, get_tts, get_stf, create_instructions,
+    create_instructions,
     is_tts_logging_enabled,
     is_stt_logging_enabled,
     ensure_logging_directories
 )
+from .model_factory import get_stt, get_tts, get_stf
+from .graph_builder import get_langgraph
 
 from livekit.agents import utils
 from livekit.agents import stt
@@ -130,6 +132,7 @@ class WallmateAgent(Agent):
         participant_identity: str,
         agent_identity: str,
         setup_data: dict,
+        mongodb_manager,  # MongoDBManager instance
     ):
         """
         Initialize WallmateAgent with MongoDB-based memory.
@@ -138,9 +141,11 @@ class WallmateAgent(Agent):
             participant_identity: Identity of the participant
             agent_identity: Identity of the agent
             setup_data: Setup data containing user language, custom persona, voice name, model name, and scene name
+            mongodb_manager: MongoDBManager instance for database operations
         """
         self.participant_identity = participant_identity
         self.agent_identity = agent_identity
+        self.mongodb_manager = mongodb_manager
         # self.user_language = setup_data['user_language']
         # self.custom_persona = setup_data['custom_persona']
         # self.voice_name = setup_data['voice_name']
@@ -183,7 +188,12 @@ class WallmateAgent(Agent):
             instructions=base_instructions,
             chat_ctx=chat_ctx,
             stt=get_stt(setup_data['user_language']),
-            llm=get_langgraph(model_name=setup_data['model_name'], scene_name=setup_data['scene_name'], participant_id=self.participant_identity),
+            llm=get_langgraph(
+                model_name=setup_data['model_name'], 
+                scene_name=setup_data['scene_name'], 
+                participant_id=self.participant_identity,
+                mongodb_manager=self.mongodb_manager
+            ),
             tts=get_tts(setup_data['voice_name']),
             stf=get_stf(),
         )
