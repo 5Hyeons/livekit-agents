@@ -114,3 +114,37 @@ class UserProfileManager:
         except Exception as e:
             logger.error(f"[UserProfile] Failed to update user name for {participant_id}: {e}")
             return False
+
+    @staticmethod
+    def update_token_balance(participant_id: str, user_profile_data: Dict[str, Any], store) -> bool:
+        """
+        Update user's token balance in MongoDB store.
+        
+        Args:
+            participant_id: The participant's identity
+            user_profile_data: Complete user profile data with updated token_info
+            store: MongoDB store instance
+        
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            # Update the entire user profile with new token balance
+            store.put(
+                namespace=("user_profile", participant_id),
+                key="basic_info",
+                value=user_profile_data
+            )
+            
+            # Log the token update
+            token_info = user_profile_data.get("token_info", {})
+            logger.info(
+                f"[UserProfile] Token balance updated for: {participant_id} "
+                f"(Remaining: {token_info.get('remaining', 0)}, "
+                f"Used: {token_info.get('total_used', 0)})"
+            )
+            return True
+            
+        except Exception as e:
+            logger.error(f"[UserProfile] Failed to update token balance for {participant_id}: {e}")
+            return False

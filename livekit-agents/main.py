@@ -127,12 +127,13 @@ async def entrypoint(ctx: JobContext):
         session=session,
         agent=agent,
         participant=participant,
-        usage_collector=usage_collector
+        usage_collector=usage_collector,
+        mongodb_store=mongodb_manager.store
     )
     session.on("agent_state_changed", event_handlers.create_agent_state_handler())
     session.on("user_state_changed", event_handlers.create_user_state_handler())
     session.on("metrics_collected", event_handlers.create_metrics_handler())
-    session.on("session_close", event_handlers.create_session_close_handler())
+    session.on("close", event_handlers.create_session_close_handler())
     
     
     # Log agent identity

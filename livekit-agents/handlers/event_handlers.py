@@ -42,6 +42,7 @@ class SessionEventHandlers:
         agent: Agent,
         participant: rtc.RemoteParticipant,
         usage_collector: metrics.UsageCollector = None,
+        mongodb_store = None,
     ):
         """
         Initialize event handlers with required dependencies (MongoDB version).
@@ -51,11 +52,13 @@ class SessionEventHandlers:
             participant: Remote participant
             ctx: Job context
             usage_collector: Metrics collector
+            mongodb_store: MongoDB store for token management
         """
         self.agent = agent
         self.participant = participant
         self.ctx = ctx
         self.usage_collector = usage_collector
+        self.mongodb_store = mongodb_store
         
         # Inactivity timeout tracking
         self.inactivity_task = None
@@ -275,26 +278,29 @@ class SessionEventHandlers:
                 summary = self.usage_collector.get_summary()
                 logger.info(f"Session ended - Final usage statistics: {summary}")
             
-            # MongoDB Checkpointer handles conversation persistence automatically
+            # Save final token state to MongoDB
             try:
-                # Legacy database usage logging disabled (using MongoDB Checkpointer now)
-                usage_summary = {"llm": {"request_count": 0}, "tts": {"request_count": 0}}
-                session_usage = {"llm_usage": [], "tts_usage": []}
-                token_info = {"remaining_tokens": 0}
+                # Import here to avoid circular imports
+                from core.user_profile import UserProfileManager
                 
-                logger.info(
-                    f"📊 Session Usage Summary:\n"
-                    f"  - LLM Requests: {len(session_usage['llm_usage'])}\n" 
-                    f"  - TTS Requests: {len(session_usage['tts_usage'])}\n"
-                    f"  - Total LLM Tokens (All-time): {usage_summary['llm']['total_tokens']}\n"
-                    f"  - Total TTS Characters (All-time): {usage_summary['tts']['total_characters']}\n"
-                    f"  💰 Token Balance:\n"
-                    f"    - Remaining: {token_info['remaining_tokens']}\n"
-                    f"    - Used: {token_info['total_tokens_used']}\n"
-                    f"    - Granted: {token_info['total_tokens_granted']}"
+                # Update token balance in MongoDB
+                UserProfileManager.update_token_balance(
+                    self.participant.identity,
+                    self.session.userdata,
+                    self.mongodb_store
                 )
+                
+                # Log final token status
+                token_info = self.session.userdata["token_info"]
+                logger.info(
+                    f"📊 Final Token Balance Saved:\n"
+                    f"  💰 Remaining: {token_info['remaining']}\n"
+                    f"  📈 Used This Session: {token_info['total_used']}\n"
+                    f"  🎁 Total Granted: {token_info['total_granted']}"
+                )
+                    
             except Exception as e:
-                logger.error(f"Failed to get usage summary from database: {e}")
+                logger.error(f"Failed to save final token balance to MongoDB: {e}")
 
             # Performance metrics were logged during execution
 
@@ -476,11 +482,34 @@ class SessionEventHandlers:
             # MongoDB Checkpointer handles metrics automatically
             logger.debug(f"TTS metrics: {metrics_dict}")
             
-            # Token management disabled (using MongoDB Checkpointer)
-            remaining_tokens = 999999  # Unlimited for now
+            # Direct token deduction from session userdata
+            characters_used = tts_metrics.characters_count
+            tokens_to_deduct = characters_used  # 1 characters = 1 token
             
-            # # 토큰 상태 체크 및 RPC 알림
-            # self._check_and_notify_token_status(remaining_tokens, tts_metrics.characters_count)
+            # Deduct tokens directly from memory
+            token_info = self.session.userdata["token_info"]
+            token_info["remaining"] -= tokens_to_deduct
+            token_info["total_used"] += tokens_to_deduct
+            
+            # Ensure remaining tokens don't go negative
+            if token_info["remaining"] < 0:
+                token_info["remaining"] = 0
+            
+            # Check token status and notify
+            remaining_tokens = token_info["remaining"]
+            granted_tokens = token_info["total_granted"]
+            used_tokens = token_info["total_used"]
+
+            self._check_and_notify_token_status(remaining_tokens, characters_used)
+            
+            # Log token usage
+            logger.info(
+                f"💾 TTS Usage - Characters: {characters_used}, "
+                f"Tokens deducted: {tokens_to_deduct}, "
+                f"Remaining: {remaining_tokens}, "
+                f"Total Granted: {granted_tokens}, "
+                f"Total Used: {used_tokens}"
+            )
             
             # # 실시간 사용량 로깅 (토큰 정보 포함)
             # logger.info(
@@ -517,79 +546,82 @@ class SessionEventHandlers:
         _ = stt_metrics  # Acknowledge parameter to avoid linting warning
         pass
 
-    # def _check_and_notify_token_status(self, remaining_tokens: int, characters_used: int):
-    #     """토큰 상태 확인 및 필요시 RPC 알림 전송"""
+    def _check_and_notify_token_status(self, remaining_tokens: int, characters_used: int):
+        """토큰 상태 확인 및 필요시 RPC 알림 전송"""
         
-    #     # 현재 상태 결정
-    #     if remaining_tokens == 0:
-    #         current_status = "depleted"
-    #         message = "Your tokens are depleted"
-    #     elif remaining_tokens <= self._token_thresholds["critical"]:
-    #         current_status = "critical"
-    #         message = f"Critical: Only {remaining_tokens} tokens remaining"
-    #     elif remaining_tokens <= self._token_thresholds["low"]:
-    #         current_status = "low"
-    #         message = f"Low balance: {remaining_tokens} tokens remaining"
-    #     else:
-    #         current_status = "normal"
-    #         message = f"Normal: {remaining_tokens} tokens remaining"
+        # 현재 상태 결정
+        if remaining_tokens == 0:
+            current_status = "depleted"
+            message = "Your tokens are depleted"
+        elif remaining_tokens <= self._token_thresholds["critical"]:
+            current_status = "critical"
+            message = f"Critical: Only {remaining_tokens} tokens remaining"
+        elif remaining_tokens <= self._token_thresholds["low"]:
+            current_status = "low"
+            message = f"Low balance: {remaining_tokens} tokens remaining"
+        else:
+            current_status = "normal"
+            message = f"Normal: {remaining_tokens} tokens remaining"
         
-    #     # 상태 변경 감지 (악화된 경우만 알림)
-    #     should_notify = False
-    #     if current_status == "depleted" and self._last_token_status != "depleted":
-    #         should_notify = True
-    #     elif current_status == "critical" and self._last_token_status in ["low", "normal"]:
-    #         should_notify = True
-    #     elif current_status == "low" and self._last_token_status == "normal":
-    #         should_notify = True
+        # 상태 변경 감지 (악화된 경우만 알림)
+        should_notify = False
+        if current_status == "depleted" and self._last_token_status != "depleted":
+            should_notify = True
+        elif current_status == "critical" and self._last_token_status in ["low", "normal"]:
+            should_notify = True
+        elif current_status == "low" and self._last_token_status == "normal":
+            should_notify = True
         
-    #     # RPC 전송
-    #     if should_notify:
-    #         try:
-    #             token_info = self.db.get_token_info(self.participant.identity)
-    #             percentage = (remaining_tokens / token_info['total_tokens_granted'] * 100) if token_info['total_tokens_granted'] > 0 else 0
+        # RPC 전송
+        if should_notify:
+            try:
+                # Get token info from session userdata instead of database
+                token_info = self.session.userdata.get("token_info", {})
+                total_granted = token_info.get("total_granted", 10000)
+                total_used = token_info.get("total_used", 0)
+                percentage = (remaining_tokens / total_granted * 100) if total_granted > 0 else 0
                 
-    #             payload = json.dumps({
-    #                 "status": current_status,
-    #                 "remaining_tokens": remaining_tokens,
-    #                 "total_granted": token_info['total_tokens_granted'],
-    #                 "total_used": token_info['total_tokens_used'],
-    #                 "percentage_remaining": round(percentage, 1),
-    #                 "last_usage": {
-    #                     "characters": characters_used,
-    #                     "timestamp": time.time()
-    #                 },
-    #                 "thresholds": self._token_thresholds,
-    #                 "message": message
-    #             })
+                payload = json.dumps({
+                    "status": current_status,
+                    "remaining_tokens": remaining_tokens,
+                    "total_granted": total_granted,
+                    "total_used": total_used,
+                    "percentage_remaining": round(percentage, 1),
+                    "last_usage": {
+                        "characters": characters_used,
+                        "timestamp": time.time()
+                    },
+                    "thresholds": self._token_thresholds,
+                    "message": message
+                })
                 
-    #             task = asyncio.create_task(
-    #                 self.ctx.room.local_participant.perform_rpc(
-    #                     destination_identity=self.participant.identity,
-    #                     method="token_status_update",
-    #                     payload=payload,
-    #                     response_timeout=1.0
-    #                 )
-    #             )
+                task = asyncio.create_task(
+                    self.ctx.room.local_participant.perform_rpc(
+                        destination_identity=self.participant.identity,
+                        method="token_status_update",
+                        payload=payload,
+                        response_timeout=1.0
+                    )
+                )
                 
-    #             # Add completion callback for error logging
-    #             def handle_rpc_result(future):
-    #                 try:
-    #                     future.result()
-    #                     logger.debug(f"Token status RPC sent successfully: {current_status}")
-    #                 except Exception as e:
-    #                     logger.warning(f"Failed to send token status RPC: {e}")
+                # Add completion callback for error logging
+                def handle_rpc_result(future):
+                    try:
+                        future.result()
+                        logger.debug(f"Token status RPC sent successfully: {current_status}")
+                    except Exception as e:
+                        logger.warning(f"Failed to send token status RPC: {e}")
                 
-    #             task.add_done_callback(handle_rpc_result)
+                task.add_done_callback(handle_rpc_result)
                 
-    #             # 로깅
-    #             logger.info(f"📢 Token status RPC sent: {current_status} - {message}")
+                # 로깅
+                logger.info(f"📢 Token status RPC sent: {current_status} - {message}")
                 
-    #         except Exception as e:
-    #             logger.error(f"Error sending token status RPC: {e}")
+            except Exception as e:
+                logger.error(f"Error sending token status RPC: {e}")
             
-    #         # 상태 업데이트
-    #         self._last_token_status = current_status
+            # 상태 업데이트
+            self._last_token_status = current_status
     
     def _log_complete_metrics(self):
         """Log complete reactivity breakdown with E2E."""
