@@ -9,7 +9,8 @@ from langchain.tools import tool
 from langgraph.graph import START, StateGraph, END
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
-from livekit.plugins import langchain
+# from livekit.plugins import langchain
+from custom_plugins import langchain
 
 from .user_profile import UserProfileManager
 from .mongodb_manager import MongoDBManager
@@ -20,6 +21,7 @@ logger = logging.getLogger("graph-builder")
 MODEL_CONFIGS = {
     "gemini": "google_genai:gemini-2.5-flash",
     "claude": "anthropic:claude-sonnet-4-20250514",
+    "gpt": "openai:gpt-4o",
 }
 
 

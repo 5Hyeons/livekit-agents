@@ -31,7 +31,7 @@ class UserProfileManager:
             
             # Try to get existing profile
             profile_data = store.get(
-                namespace=("user_profile", participant_id),
+                namespace=(participant_id,),
                 key="basic_info"
             )
             
@@ -54,7 +54,7 @@ class UserProfileManager:
                 
                 # Save to MongoDB Store
                 store.put(
-                    namespace=("user_profile", participant_id),
+                    namespace=(participant_id,),
                     key="basic_info",
                     value=new_profile
                 )
@@ -87,7 +87,7 @@ class UserProfileManager:
             
             # Get existing profile
             profile_data = store.get(
-                namespace=("user_profile", participant_id),
+                namespace=(participant_id,),
                 key="basic_info"
             )
             
@@ -100,7 +100,7 @@ class UserProfileManager:
                 
                 # Save updated profile to MongoDB Store
                 store.put(
-                    namespace=("user_profile", participant_id),
+                    namespace=(participant_id,),
                     key="basic_info",
                     value=updated_profile
                 )
@@ -131,7 +131,7 @@ class UserProfileManager:
         try:
             # Update the entire user profile with new token balance
             store.put(
-                namespace=("user_profile", participant_id),
+                namespace=(participant_id,),
                 key="basic_info",
                 value=user_profile_data
             )
