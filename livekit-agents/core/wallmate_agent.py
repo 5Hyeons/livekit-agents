@@ -129,8 +129,7 @@ class WallmateAgent(Agent):
 
     def __init__(
         self,
-        participant_identity: str,
-        agent_identity: str,
+        user_data: dict,
         setup_data: dict,
         mongodb_manager,  # MongoDBManager instance
     ):
@@ -138,13 +137,9 @@ class WallmateAgent(Agent):
         Initialize WallmateAgent with MongoDB-based memory.
 
         Args:
-            participant_identity: Identity of the participant
-            agent_identity: Identity of the agent
             setup_data: Setup data containing user language, custom persona, voice name, model name, and scene name
             mongodb_manager: MongoDBManager instance for database operations
         """
-        self.participant_identity = participant_identity
-        self.agent_identity = agent_identity
         self.mongodb_manager = mongodb_manager
         # self.user_language = setup_data['user_language']
         # self.custom_persona = setup_data['custom_persona']
@@ -153,19 +148,20 @@ class WallmateAgent(Agent):
         # self.scene_name = setup_data['scene_name']
 
         # Initialize logging directories for this user
-        self.logging_enabled = (is_tts_logging_enabled(self.participant_identity) or 
-                               is_stt_logging_enabled(self.participant_identity))
+        self.userdata = user_data
+        self.logging_enabled = (is_tts_logging_enabled(self.userdata["user_id"]) or 
+                               is_stt_logging_enabled(self.userdata["user_id"]))
         self.tts_output_dir = None
         self.stt_input_dir = None
         
         if self.logging_enabled:
-            logging_dirs = ensure_logging_directories(self.participant_identity)
+            logging_dirs = ensure_logging_directories(self.userdata["user_id"])
             self.tts_output_dir = logging_dirs["tts_output"]
             self.stt_input_dir = logging_dirs["stt_input"]
-            logger.info(f"Audio logging enabled for user: {self.participant_identity}")
+            logger.info(f"Audio logging enabled for user: {self.userdata["user_id"]}")
         else:
             self.stt_input_dir = None
-            logger.debug(f"Audio logging disabled for user: {self.participant_identity}")
+            logger.debug(f"Audio logging disabled for user: {self.userdata["user_id"]}")
 
         if setup_data['custom_persona']:
             logger.info(f"Use Custom persona: {setup_data['custom_persona']}")
@@ -190,8 +186,8 @@ class WallmateAgent(Agent):
             stt=get_stt(setup_data['user_language']),
             llm=get_langgraph(
                 model_name=setup_data['model_name'], 
-                scene_name=setup_data['scene_name'], 
-                participant_id=self.participant_identity,
+                user_id=self.userdata["user_id"],
+                thread_id=self.userdata["thread_id"],
                 mongodb_manager=self.mongodb_manager
             ),
             tts=get_tts(setup_data['voice_name']),
@@ -205,15 +201,13 @@ class WallmateAgent(Agent):
         Handle agent entry into conversation session.
         Uses userdata to personalize greeting based on stored user profile.
         """
-        logger.info(f"WallmateAgent entering session for user: {self.participant_identity}")
+        logger.info(f"WallmateAgent entering session for user: {self.userdata["user_id"]}")
         
         # Get user profile from session userdata
-        user_profile = self.session.userdata
-        user_name = user_profile.get('name')
         
         # Generate personalized system context
-        system_context = f"[SYSTEM_CONTEXT: The user just joined. User name is {user_name}. Respond naturally.]"
-        logger.info(f"The User just joined: User name is {user_name}")
+        system_context = f"[SYSTEM_CONTEXT: The user just joined. User name is {self.userdata["name"]}. Respond naturally.]"
+        logger.info(f"The User just joined: User name is {self.userdata["name"]}")
         
         await self.session.generate_reply(user_input=system_context, allow_interruptions=False)
 
@@ -235,9 +229,8 @@ class WallmateAgent(Agent):
         try:
             # Generate unique filename with timestamp and identities
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]  # milliseconds precision
-            safe_participant = self.participant_identity.replace("/", "_").replace("\\", "_")
-            safe_agent = self.agent_identity.replace("/", "_").replace("\\", "_")
-            filename = f"{timestamp}_{safe_participant}_{safe_agent}_{audio_type}.wav"
+            safe_participant = self.userdata["user_id"].replace("/", "_").replace("\\", "_")
+            filename = f"{timestamp}_{safe_participant}_{audio_type}.wav"
             filepath = os.path.join(output_dir, filename)
             
             # Combine all audio frames
@@ -284,8 +277,8 @@ class WallmateAgent(Agent):
                     # Only log text if TTS logging is enabled for this user
                     if self.logging_enabled:
                         logger.info(
-                            f"[TTS] Participant: {self.participant_identity}, "
-                            f"Agent: {self.agent_identity}, Text: \"{text_chunk.strip()}\""
+                            f"[TTS] User: {self.userdata["user_id"]}, "
+                            f"Text: \"{text_chunk.strip()}\""
                         )
                 yield text_chunk
         
@@ -319,12 +312,11 @@ class WallmateAgent(Agent):
         """
         # Initialize streaming WAV writer if STT logging is enabled
         wav_writer = None
-        if is_stt_logging_enabled(self.participant_identity) and self.stt_input_dir:
+        if is_stt_logging_enabled(self.userdata["user_id"]) and self.stt_input_dir:
             # Generate unique filename with timestamp
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
-            safe_participant = self.participant_identity.replace("/", "_").replace("\\", "_")
-            safe_agent = self.agent_identity.replace("/", "_").replace("\\", "_")
-            filename = f"{timestamp}_{safe_participant}_{safe_agent}_stt_stream.wav"
+            safe_participant = self.userdata["user_id"].replace("/", "_").replace("\\", "_")
+            filename = f"{timestamp}_{safe_participant}_stt_stream.wav"
             filepath = os.path.join(self.stt_input_dir, filename)
             
             # Create writer with auto-detection of sample_rate and channels
@@ -354,15 +346,14 @@ class WallmateAgent(Agent):
                 if (isinstance(speech_event, stt.SpeechEvent) and 
                     speech_event.type in [SpeechEventType.INTERIM_TRANSCRIPT, 
                                          SpeechEventType.FINAL_TRANSCRIPT] and
-                    is_stt_logging_enabled(self.participant_identity)):
+                    is_stt_logging_enabled(self.userdata["user_id"])):
                     
                     if speech_event.alternatives:
                         transcript_text = speech_event.alternatives[0].text.strip()
                         if transcript_text:
                             # Log the transcription
                             logger.info(
-                                f"[STT] Participant: {self.participant_identity}, "
-                                f"Agent: {self.agent_identity}, "
+                                f"[STT] User: {self.userdata["user_id"]}, "
                                 f"Type: {speech_event.type}, "
                                 f"Transcript: \"{transcript_text}\""
                             )

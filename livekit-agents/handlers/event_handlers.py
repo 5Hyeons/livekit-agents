@@ -8,16 +8,15 @@ import logging
 import os
 import time
 from datetime import datetime
-from typing import TYPE_CHECKING
 
 # User inactivity timeout configuration
 USER_INACTIVITY_TIMEOUT_SECONDS = 180
 CLOSE_SESSION_AFTER_INACTIVITY_SECONDS = 300
-from user_database import ChatMessage, UserData, UserDatabase
-from config import is_metrics_logging_enabled, get_metrics_output_directory, ensure_logging_directories
+from core.user_profile import UserProfileManager
+from config import is_metrics_logging_enabled, ensure_logging_directories
 
 from livekit import rtc
-from livekit.agents import JobContext, llm, metrics
+from livekit.agents import JobContext, metrics
 from livekit.agents.voice import Agent, AgentSession, MetricsCollectedEvent, CloseEvent, CloseReason
 
 
@@ -195,7 +194,7 @@ class SessionEventHandlers:
                     self.inactivity_task = asyncio.create_task(inactive_user_timeout())
                     
                     # Add cleanup callback to prevent memory leaks
-                    def cleanup_task(task):
+                    def cleanup_task(_):
                         self.inactivity_task = None
                     self.inactivity_task.add_done_callback(cleanup_task)
                     
@@ -278,81 +277,34 @@ class SessionEventHandlers:
                 summary = self.usage_collector.get_summary()
                 logger.info(f"Session ended - Final usage statistics: {summary}")
             
-            # Save final token state to MongoDB
-            try:
-                # Import here to avoid circular imports
-                from core.user_profile import UserProfileManager
-                
-                # Update token balance in MongoDB
-                UserProfileManager.update_token_balance(
-                    self.participant.identity,
-                    self.session.userdata,
-                    self.mongodb_store
+            # Sync final token usage to wallmate-db-server
+            token_info = self.session.userdata["token_info"]
+            # Calculate tokens used during this session
+            tokens_used = token_info["token_to_deduct"]  # Tokens used in this session
+
+            if tokens_used > 0:
+                # Extract scene_id from user profile thread_id for scene-specific tracking
+                scene_id = self.session.userdata["scene_id"]
+
+                # Start background sync task with scene tracking
+                task = asyncio.create_task(
+                    UserProfileManager.sync_token_usage(
+                        self.participant.identity,
+                        scene_id,
+                        tokens_used,
+                        f"Voice session [{scene_id}]"
+                    )
                 )
-                
+
                 # Log final token status
-                token_info = self.session.userdata["token_info"]
+                scene_info = f" (Scene: {scene_id})" if scene_id else ""
                 logger.info(
-                    f"📊 Final Token Balance Saved:\n"
-                    f"  💰 Remaining: {token_info['remaining']}\n"
-                    f"  📈 Used This Session: {token_info['total_used']}\n"
-                    f"  🎁 Total Granted: {token_info['total_granted']}"
+                    f"  📈 Used This Session: {tokens_used}{scene_info}\n"
+                    f"  🔄 Syncing to wallmate-db-server..."
                 )
-                    
-            except Exception as e:
-                logger.error(f"Failed to save final token balance to MongoDB: {e}")
+            else:
+                logger.info("📊 No tokens used this session, skipping sync")
 
-            # Performance metrics were logged during execution
-
-            # Extract chat messages from agent context (only new messages from current session)
-            # chat_messages = []
-            # start_index = self.agent._preloaded_message_count
-
-            # for item in self.agent.chat_ctx.items[start_index:]:
-            #     if isinstance(item, llm.ChatMessage):
-            #         # Skip system messages
-            #         if item.role in ["system", "developer"]:
-            #             continue
-
-            #         # Convert timestamp to datetime
-            #         if isinstance(item.created_at, (int, float)):
-            #             timestamp = datetime.fromtimestamp(item.created_at)
-            #         elif isinstance(item.created_at, datetime):
-            #             timestamp = item.created_at
-            #         else:
-            #             timestamp = datetime.now()
-
-            #         # Extract content string
-            #         content_str = ""
-            #         if isinstance(item.content, list):
-            #             content_str = " ".join(str(c) for c in item.content)
-            #         else:
-            #             content_str = str(item.content)
-
-            #         chat_messages.append(
-            #             ChatMessage(
-            #                 participant_id=self.participant.identity,
-            #                 # session_id=participant_session_id,  # MongoDB handles this
-            #                 timestamp=timestamp,
-            #                 role=item.role,
-            #                 content=content_str,
-            #                 interrupted=getattr(item, "interrupted", False),
-            #             )
-            #         )
-
-            # logger.info(
-            #     f"Session ended, saving chat history... (total {len(chat_messages)} messages)"
-            # )
-
-            # # Save to database
-            # if chat_messages:
-            #     self.db.save_chat_messages(chat_messages)
-            #     self.db.update_last_seen(self.participant.identity)
-
-            # # Log user summary
-            # user_summary = self.db.get_user_summary(self.participant.identity)
-            # logger.info(f"User summary: {user_summary}")
-            
             # Prepare close reason details
             close_details = {
                 "reason": ev.reason.value,
@@ -482,33 +434,20 @@ class SessionEventHandlers:
             # MongoDB Checkpointer handles metrics automatically
             logger.debug(f"TTS metrics: {metrics_dict}")
             
-            # Direct token deduction from session userdata
+            # Simple memory-based token deduction (efficient!)
             characters_used = tts_metrics.characters_count
             tokens_to_deduct = characters_used  # 1 characters = 1 token
-            
-            # Deduct tokens directly from memory
+            # Deduct tokens directly from session memory
             token_info = self.session.userdata["token_info"]
-            token_info["remaining"] -= tokens_to_deduct
-            token_info["total_used"] += tokens_to_deduct
-            
-            # Ensure remaining tokens don't go negative
-            if token_info["remaining"] < 0:
-                token_info["remaining"] = 0
-            
-            # Check token status and notify
-            remaining_tokens = token_info["remaining"]
-            granted_tokens = token_info["total_granted"]
-            used_tokens = token_info["total_used"]
-
-            self._check_and_notify_token_status(remaining_tokens, characters_used)
+            token_info["token_to_deduct"] += tokens_to_deduct
+            # Check token status and notify client
+            # self._check_and_notify_token_status(remaining_tokens, characters_used)
             
             # Log token usage
             logger.info(
                 f"💾 TTS Usage - Characters: {characters_used}, "
                 f"Tokens deducted: {tokens_to_deduct}, "
-                f"Remaining: {remaining_tokens}, "
-                f"Total Granted: {granted_tokens}, "
-                f"Total Used: {used_tokens}"
+                f"Token to deduct: {token_info['token_to_deduct']}"
             )
             
             # # 실시간 사용량 로깅 (토큰 정보 포함)
@@ -577,10 +516,10 @@ class SessionEventHandlers:
             try:
                 # Get token info from session userdata instead of database
                 token_info = self.session.userdata.get("token_info", {})
-                total_granted = token_info.get("total_granted", 10000)
-                total_used = token_info.get("total_used", 0)
+                total_granted = token_info["total_earned"]
+                total_used = token_info["total_spent"]
                 percentage = (remaining_tokens / total_granted * 100) if total_granted > 0 else 0
-                
+
                 payload = json.dumps({
                     "status": current_status,
                     "remaining_tokens": remaining_tokens,
@@ -659,7 +598,7 @@ class SessionEventHandlers:
             # Prepare metrics data
             metrics_data = {
                 "timestamp": datetime.now().isoformat(),
-                "participant_identity": self.participant.identity,
+                "user_identity": self.participant.identity,
                 "agent_identity": getattr(self.ctx.room.local_participant, 'identity', 'unknown'),
                 "session_id": getattr(self.user_data, 'session_id', 'unknown'),
                 "metrics": {

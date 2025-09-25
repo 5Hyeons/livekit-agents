@@ -1,8 +1,11 @@
-"""MongoDB-based user profile management."""
+"""MongoDB-based user profile management with token balance integration."""
 
 import logging
+import os
 from datetime import datetime
-from typing import Dict, Any
+from typing import Dict, Any, Optional
+import aiohttp
+import asyncio
 
 # MongoDB store will be passed as parameter
 
@@ -13,81 +16,94 @@ class UserProfileManager:
     """MongoDB Store 기반 사용자 프로필 관리."""
     
     @staticmethod
-    def get_or_create_profile(participant_id: str, store) -> Dict[str, Any]:
+    async def get_profile(user_identity: str, thread_identity: str, store) -> Dict[str, Any]:
         """
-        Get existing user profile or create a new one.
-        
+        Get user profile with token balance from MongoDB store and wallmate-db-server.
+        Creates thread profile if it doesn't exist.
+
         Args:
-            participant_id: The participant's identity
+            user_identity: The user's identity
+            thread_identity: The thread's identity (e.g., "scene_user-123")
             store: MongoDB store instance
-        
+
         Returns:
-            User profile data dictionary
+            User profile data with integrated token info
+
+        Raises:
+            ValueError: If user_identity is missing or token balance fails
         """
-        if not participant_id:
-            return {"name": "Unknown"}
-        
+        if not user_identity:
+            raise ValueError("user_identity is required")
+
         try:
-            
-            # Try to get existing profile
+            # 1. Get profile from MongoDB Store
             profile_data = store.get(
-                namespace=(participant_id,),
+                namespace=(thread_identity,),
                 key="basic_info"
             )
-            
-            if profile_data and profile_data.value:
-                logger.info(f"[UserProfile] Loaded existing profile for: {participant_id}")
-                return profile_data.value
-            else:
-                # Create new profile with default values
-                new_profile = {
-                    "name": "Unknown",
-                    "created_at": datetime.now().isoformat(),
-                    "last_seen": datetime.now().isoformat(),
-                    "token_info": {
-                        "total_granted": 10000,
-                        "total_used": 0,
-                        "remaining": 10000,
-                        "status": "normal"
-                    }
-                }
-                
-                # Save to MongoDB Store
-                store.put(
-                    namespace=(participant_id,),
-                    key="basic_info",
-                    value=new_profile
+
+            if not profile_data or not profile_data.value:
+                # Profile doesn't exist - create it via wallmate-db-server
+                logger.info(f"[UserProfile] Thread profile not found for: {thread_identity}, creating new one")
+
+                created = await UserProfileManager.create_thread_profile(thread_identity, user_identity)
+                if not created:
+                    raise ValueError(f"Failed to create thread profile for: {thread_identity}")
+
+                # Try to get profile again after creation
+                profile_data = store.get(
+                    namespace=(thread_identity,),
+                    key="basic_info"
                 )
-                
-                logger.info(f"[UserProfile] Created new profile for: {participant_id}")
-                return new_profile
-                
+
+                if not profile_data or not profile_data.value:
+                    raise ValueError(f"Thread profile still not found after creation: {thread_identity}")
+
+            profile = profile_data.value
+            logger.info(f"[UserProfile] Loaded profile for thread: {thread_identity} (user: {user_identity})")
+
+            # 2. Get token balance from wallmate-db-server
+            token_info = await UserProfileManager.get_token_balance(user_identity)
+
+            if not token_info:
+                raise ValueError(f"Failed to get token balance for user: {user_identity}")
+
+            # 3. Integrate token info into profile
+            profile["token_info"] = token_info
+            profile["thread_id"] = thread_identity
+            profile["user_id"] = user_identity
+
+            logger.info(f"[UserProfile] Complete profile loaded with {token_info['remaining']} tokens for: {user_identity}")
+            return profile
+
+        except ValueError:
+            # Re-raise ValueError as is
+            raise
         except Exception as e:
-            logger.error(f"[UserProfile] Failed to get/create profile for {participant_id}: {e}")
-            # Return minimal fallback profile
-            return {"name": "Unknown"}
+            logger.error(f"[UserProfile] Unexpected error getting profile for {user_identity}: {e}")
+            raise ValueError(f"Failed to get profile for {user_identity}: {str(e)}")
     
     @staticmethod
-    def update_user_name(participant_id: str, name: str, store) -> bool:
+    def update_user_name(thread_identity: str, name: str, store) -> bool:
         """
         Update user's name in their profile.
         
         Args:
-            participant_id: The participant's identity
+            thread_identity: The thread's identity
             name: The new name to save
             store: MongoDB store instance
         
         Returns:
             True if successful, False otherwise
         """
-        if not participant_id:
+        if not thread_identity:
             return False
         
         try:
             
             # Get existing profile
             profile_data = store.get(
-                namespace=(participant_id,),
+                namespace=(thread_identity,),
                 key="basic_info"
             )
             
@@ -100,51 +116,153 @@ class UserProfileManager:
                 
                 # Save updated profile to MongoDB Store
                 store.put(
-                    namespace=(participant_id,),
+                    namespace=(thread_identity,),
                     key="basic_info",
                     value=updated_profile
                 )
                 
-                logger.info(f"[UserProfile] Updated user name: {participant_id} ({old_name} -> {name})")
+                logger.info(f"[UserProfile] Updated user name: {thread_identity} ({old_name} -> {name})")
                 return True
             else:
-                logger.warning(f"[UserProfile] Profile not found for update: {participant_id}")
+                logger.warning(f"[UserProfile] Profile not found for update: {thread_identity}")
                 return False
                 
         except Exception as e:
-            logger.error(f"[UserProfile] Failed to update user name for {participant_id}: {e}")
+            logger.error(f"[UserProfile] Failed to update user name for {thread_identity}: {e}")
             return False
 
     @staticmethod
-    def update_token_balance(participant_id: str, user_profile_data: Dict[str, Any], store) -> bool:
+    async def get_token_balance(user_identity: str) -> Optional[Dict[str, Any]]:
         """
-        Update user's token balance in MongoDB store.
-        
+        Get token balance from wallmate-db-server for session startup.
+
         Args:
-            participant_id: The participant's identity
-            user_profile_data: Complete user profile data with updated token_info
-            store: MongoDB store instance
-        
+            user_identity: The user's identity (user_id)
+
+        Returns:
+            Token balance data or None if failed
+        """
+        base_url = os.getenv("WALLMATE_DB_SERVER_URL", "http://localhost:8018")
+
+        try:
+            timeout = aiohttp.ClientTimeout(total=5.0)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                url = f"{base_url}/api/token/balance/{user_identity}"
+
+                async with session.get(url) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        if data.get("success"):
+                            logger.info(f"[UserProfile] Retrieved token balance for {user_identity}: {data['current_tokens']} tokens")
+                            return {
+                                "remaining": data["current_tokens"],
+                                "total_earned": data["total_earned"],
+                                "total_spent": data["total_spent"],  # Use this instead of total_used
+                                "status": "normal",
+                                "token_to_deduct": 0
+                            }
+                        else:
+                            logger.error(f"[UserProfile] Token balance API returned failure: {data}")
+                    else:
+                        logger.error(f"[UserProfile] Token balance API returned status {response.status}")
+
+        except asyncio.TimeoutError:
+            logger.error(f"[UserProfile] Timeout getting token balance for {user_identity}")
+        except Exception as e:
+            logger.error(f"[UserProfile] Error getting token balance for {user_identity}: {e}")
+
+        return None
+
+    @staticmethod
+    async def create_thread_profile(thread_id: str, user_id: str) -> bool:
+        """
+        Create thread profile via wallmate-db-server API.
+
+        Args:
+            thread_id: Thread identifier (e.g., "scene_user-123")
+            user_id: User identifier
+
         Returns:
             True if successful, False otherwise
         """
+        base_url = os.getenv("WALLMATE_DB_SERVER_URL", "http://localhost:8018")
+
         try:
-            # Update the entire user profile with new token balance
-            store.put(
-                namespace=(participant_id,),
-                key="basic_info",
-                value=user_profile_data
-            )
-            
-            # Log the token update
-            token_info = user_profile_data.get("token_info", {})
-            logger.info(
-                f"[UserProfile] Token balance updated for: {participant_id} "
-                f"(Remaining: {token_info.get('remaining', 0)}, "
-                f"Used: {token_info.get('total_used', 0)})"
-            )
-            return True
-            
+            timeout = aiohttp.ClientTimeout(total=5.0)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                url = f"{base_url}/api/memory/thread/profile"
+
+                payload = {
+                    "thread_id": thread_id,
+                    "user_id": user_id
+                }
+
+                async with session.post(url, json=payload) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        if data.get("success"):
+                            logger.info(f"[UserProfile] Created thread profile for: {thread_id} (user: {user_id})")
+                            return True
+                        else:
+                            logger.error(f"[UserProfile] Thread profile creation API returned failure: {data}")
+                    else:
+                        logger.error(f"[UserProfile] Thread profile creation API returned status {response.status}")
+
+        except asyncio.TimeoutError:
+            logger.error(f"[UserProfile] Timeout creating thread profile for: {thread_id}")
         except Exception as e:
-            logger.error(f"[UserProfile] Failed to update token balance for {participant_id}: {e}")
-            return False
+            logger.error(f"[UserProfile] Error creating thread profile for {thread_id}: {e}")
+
+        return False
+
+    @staticmethod
+    async def sync_token_usage(user_identity: str, scene_id: str, tokens_used: int, description: str = "Session usage") -> bool:
+        """
+        Sync token usage to wallmate-db-server at session end.
+
+        Args:
+            user_identity: The user's identity (user_id)
+            scene_id: Scene identifier for tracking scene-specific usage
+            tokens_used: Total tokens used during session
+            description: Description of usage
+
+        Returns:
+            True if successful, False otherwise
+        """
+        if tokens_used <= 0:
+            logger.debug(f"[UserProfile] No tokens used for {user_identity}, skipping sync")
+            return True
+
+        base_url = os.getenv("WALLMATE_DB_SERVER_URL", "http://localhost:8018")
+
+        try:
+            timeout = aiohttp.ClientTimeout(total=10.0)  # Longer timeout for final sync
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                url = f"{base_url}/api/token/use"
+
+                payload = {
+                    "user_id": user_identity,
+                    "scene_id": scene_id,
+                    "amount": tokens_used,
+                    "description": description,
+                    "item_name": "Voice Session"
+                }
+
+                async with session.post(url, json=payload) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        if data.get("success"):
+                            logger.info(f"[UserProfile] Synced token usage for {user_identity}: {tokens_used} tokens used")
+                            return True
+                        else:
+                            logger.error(f"[UserProfile] Token sync API returned failure: {data}")
+                    else:
+                        logger.error(f"[UserProfile] Token sync API returned status {response.status}")
+
+        except asyncio.TimeoutError:
+            logger.error(f"[UserProfile] Timeout syncing token usage for {user_identity}")
+        except Exception as e:
+            logger.error(f"[UserProfile] Error syncing token usage for {user_identity}: {e}")
+
+        return False
+

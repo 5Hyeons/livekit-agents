@@ -29,7 +29,7 @@ class State(TypedDict):
     messages: Annotated[list[BaseMessage], add_messages]
 
 
-def create_tools(participant_id: str, mongodb_manager: MongoDBManager) -> list:
+def create_tools(thread_identity: str, mongodb_manager: MongoDBManager) -> list:
     """Create LangGraph tools with participant_id bound via closure."""
     
     @tool
@@ -42,33 +42,33 @@ def create_tools(participant_id: str, mongodb_manager: MongoDBManager) -> list:
         
         Updates permanently in MongoDB Store. Will be reflected in next session.
         """
-        if not participant_id:
+        if not thread_identity:
             return "[SYSTEM_CONTEXT: Unable to save name - session error.]"
         
-        success = UserProfileManager.update_user_name(participant_id, name, mongodb_manager.store)
+        success = UserProfileManager.update_user_name(thread_identity, name, mongodb_manager.store)
         
         if success:
             return f"[SYSTEM_CONTEXT: User '{name}' introduced themselves. Remember their name and respond naturally.]"
         else:
-            logger.error(f"[LangGraph Tool] Failed to save name for {participant_id}")
+            logger.error(f"[LangGraph Tool] Failed to save name for {thread_identity}")
             return f"[SYSTEM_CONTEXT: User '{name}' introduced themselves. Remember their name and respond naturally.]"
     
     return [save_user_name]
 
 
-def create_graph_with_mongodb(model_name: str, participant_id: str, mongodb_manager) -> StateGraph:
+def create_graph_with_mongodb(model_name: str, thread_identity: str, mongodb_manager) -> StateGraph:
     """Create LangGraph with MongoDB checkpointer and store.
     
     Args:
         model_name: Name of the model to use
-        participant_id: Participant identifier
+        thread_identity: Thread identifier
         mongodb_manager: MongoDBManager instance
     """
     
-    if participant_id:
-        logger.info(f"[LangGraph] MongoDB checkpointer initialized for: {participant_id}")
+    if thread_identity:
+        logger.info(f"[LangGraph] MongoDB checkpointer initialized for: {thread_identity}")
     else:
-        logger.warning("[LangGraph] No participant_id provided for MongoDB memory")
+        logger.warning("[LangGraph] No thread_identity provided for MongoDB memory")
     
     # 모델 설정 확인
     if model_name not in MODEL_CONFIGS:
@@ -82,7 +82,7 @@ def create_graph_with_mongodb(model_name: str, participant_id: str, mongodb_mana
     )
     
     # 참가자별 도구 생성 (store 전달)
-    tools = create_tools(participant_id, mongodb_manager)
+    tools = create_tools(thread_identity, mongodb_manager)
     llm_with_tools = chat_model.bind_tools(tools=tools, tool_choice="auto")
     logger.info(f"[LangGraph] Tools bound to model: {[tool.name for tool in tools]}")
 
@@ -129,23 +129,22 @@ def create_graph_with_mongodb(model_name: str, participant_id: str, mongodb_mana
     return builder.compile(checkpointer=checkpointer, store=mongodb_manager.store)
 
 
-def get_langgraph(model_name: str = "gemini", scene_name: str = "default_scene", participant_id: str = None, mongodb_manager = None):
+def get_langgraph(model_name: str = "gemini", user_id: str = None, thread_id: str = None, mongodb_manager = None):
     """Get LangGraph LLM with MongoDB checkpointer.""" 
     if model_name not in MODEL_CONFIGS:
         raise ValueError(f"Unsupported model: {model_name}. Available: {list(MODEL_CONFIGS.keys())}")
     
     graph = create_graph_with_mongodb(
         model_name=model_name, 
-        participant_id=participant_id,
+        thread_identity=thread_id,
         mongodb_manager=mongodb_manager
     )
     
     # Thread-based configuration for MongoDB persistence
-    thread_id = f"{scene_name}_{participant_id}"
     config = {
         "configurable": {
             "thread_id": thread_id,
-            "user_id": participant_id
+            "user_id": user_id
         }
     }
     

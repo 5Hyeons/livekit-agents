@@ -93,15 +93,22 @@ async def entrypoint(ctx: JobContext):
     room_output_options = setup_data['room_output_options']
     
     # Get identity information
-    participant_identity = participant.identity
-    agent_identity = ctx.room.local_participant.identity
-    
-    # Get or create user profile with MongoDB store
-    user_profile = UserProfileManager.get_or_create_profile(
-        participant_identity,
-        mongodb_manager.store
-    )
-    
+    user_identity = participant.identity
+    thread_identity = f"{setup_data['scene_name']}_user-{user_identity}"
+
+    # Get complete user profile with token balance (async, integrated call)
+    try:
+        user_profile = await UserProfileManager.get_profile(
+            user_identity,
+            thread_identity,
+            mongodb_manager.store
+        )
+        user_profile["scene_id"] = setup_data["scene_name"]
+    except ValueError as e:
+        logger.error(f"Failed to get user profile: {e}")
+        # Critical error - cannot continue without profile and token info
+        raise ConnectionError(f"User profile initialization failed: {e}")
+
     # Create agent session
     session = AgentSession(
         vad=ctx.proc.userdata["vad"],
@@ -114,10 +121,9 @@ async def entrypoint(ctx: JobContext):
     
     # Create agent instance with MongoDB manager
     agent = WallmateAgent(
-        participant_identity, 
-        agent_identity,
-        setup_data,
-        mongodb_manager
+        user_data=user_profile,
+        setup_data=setup_data,
+        mongodb_manager=mongodb_manager
     )
     
     # Create event handlers (MongoDB version)
@@ -134,11 +140,6 @@ async def entrypoint(ctx: JobContext):
     session.on("user_state_changed", event_handlers.create_user_state_handler())
     session.on("metrics_collected", event_handlers.create_metrics_handler())
     session.on("close", event_handlers.create_session_close_handler())
-    
-    
-    # Log agent identity
-    agent_identity = ctx.room.local_participant.identity
-    logger.info(f"Agent identity: {agent_identity}")
     
     # Start agent session
     await session.start(
