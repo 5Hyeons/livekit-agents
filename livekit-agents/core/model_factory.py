@@ -3,7 +3,7 @@
 import logging
 
 from livekit.agents.stf import FaceAnimator, OutputMode
-from livekit.plugins import deepgram
+from livekit.plugins import deepgram, anthropic, openai, google
 
 from .graph_builder import get_langgraph
 
@@ -14,6 +14,18 @@ def get_stt(language: str = "ko"):
     """Get Deepgram STT configuration."""
     return deepgram.STT(model="nova-2-general", language=language)
 
+
+def get_llm(model_provider: str = "google"):
+    """Get LLM configuration."""
+    match model_provider:
+        case "openai":
+            return openai.LLM(model='gpt-4o')
+        case "anthropic":
+            return anthropic.LLM(model='claude-sonnet-4-20250514')
+        case "google":
+            return google.LLM(model='gemini-2.5-flash')
+        case _:
+            raise ValueError(f"Invalid model provider: {model_provider}")
 
 def get_tts(voice_name: str = "FEMALE_1"):
     """Get ElevenLabs TTS configuration."""

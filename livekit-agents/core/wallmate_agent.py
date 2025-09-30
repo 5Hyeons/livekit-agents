@@ -16,8 +16,8 @@ from config import (
     is_stt_logging_enabled,
     ensure_logging_directories
 )
-from .model_factory import get_stt, get_tts, get_stf
-from .graph_builder import get_langgraph
+from .model_factory import get_stt, get_tts, get_stf, get_llm
+# from .graph_builder import get_langgraph
 
 from livekit.agents import utils
 from livekit.agents import stt
@@ -184,12 +184,13 @@ class WallmateAgent(Agent):
             instructions=base_instructions,
             chat_ctx=chat_ctx,
             stt=get_stt(setup_data['user_language']),
-            llm=get_langgraph(
-                model_name=setup_data['model_name'], 
-                user_id=self.userdata["user_id"],
-                thread_id=self.userdata["thread_id"],
-                mongodb_manager=self.mongodb_manager
-            ),
+            # llm=get_langgraph(
+            #     model_name=setup_data['model_name'], 
+            #     user_id=self.userdata["user_id"],
+            #     thread_id=self.userdata["thread_id"],
+            #     mongodb_manager=self.mongodb_manager
+            # ),
+            llm=get_llm(),
             tts=get_tts(setup_data['voice_name']),
             stf=get_stf(),
         )
