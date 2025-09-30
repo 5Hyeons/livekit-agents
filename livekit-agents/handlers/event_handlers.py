@@ -12,7 +12,6 @@ from datetime import datetime
 # User inactivity timeout configuration
 USER_INACTIVITY_TIMEOUT_SECONDS = 180
 CLOSE_SESSION_AFTER_INACTIVITY_SECONDS = 300
-from core.user_profile import UserProfileManager
 from config import is_metrics_logging_enabled, ensure_logging_directories
 
 from livekit import rtc
@@ -41,23 +40,24 @@ class SessionEventHandlers:
         agent: Agent,
         participant: rtc.RemoteParticipant,
         usage_collector: metrics.UsageCollector = None,
-        mongodb_store = None,
+        api_manager = None,  # RestAPIManager
     ):
         """
-        Initialize event handlers with required dependencies (MongoDB version).
+        Initialize event handlers with required dependencies (REST API version).
 
         Args:
             agent: Agent instance
             participant: Remote participant
             ctx: Job context
+            session: Agent session
             usage_collector: Metrics collector
-            mongodb_store: MongoDB store for token management
+            api_manager: RestAPIManager for database operations
         """
         self.agent = agent
         self.participant = participant
         self.ctx = ctx
         self.usage_collector = usage_collector
-        self.mongodb_store = mongodb_store
+        self.api_manager = api_manager
         
         # Inactivity timeout tracking
         self.inactivity_task = None
@@ -276,25 +276,50 @@ class SessionEventHandlers:
             if self.usage_collector:
                 summary = self.usage_collector.get_summary()
                 logger.info(f"Session ended - Final usage statistics: {summary}")
-            
-            # Sync final token usage to wallmate-db-server
-            token_info = self.session.userdata["token_info"]
-            # Calculate tokens used during this session
-            tokens_used = token_info["token_to_deduct"]  # Tokens used in this session
 
-            if tokens_used > 0:
-                # Extract scene_id from user profile thread_id for scene-specific tracking
+            # 1. Save conversation history to wallmate-db-server
+            if self.session.history and self.api_manager:
+                thread_id = self.session.userdata.get("thread_id")
+
+                task = asyncio.create_task(
+                    self.api_manager.save_conversation(thread_id, self.session.history)
+                )
+
+                def handle_save_result(future):
+                    try:
+                        future.result()
+                        logger.debug("✅ Conversation save task completed")
+                    except Exception as e:
+                        logger.warning(f"❌ Conversation save task failed: {e}")
+
+                task.add_done_callback(handle_save_result)
+
+            # 2. Sync final token usage to wallmate-db-server
+            token_info = self.session.userdata.get("token_info", {})
+            tokens_used = token_info.get("token_to_deduct", 0)
+
+            if tokens_used > 0 and self.api_manager:
+                user_id = self.session.userdata["user_id"]
                 scene_id = self.session.userdata["scene_id"]
 
-                # Start background sync task with scene tracking
+                # Use RestAPIManager instead of UserProfileManager
                 task = asyncio.create_task(
-                    UserProfileManager.sync_token_usage(
-                        self.participant.identity,
+                    self.api_manager.sync_token_usage(
+                        user_id,
                         scene_id,
                         tokens_used,
                         f"Voice session [{scene_id}]"
                     )
                 )
+
+                def handle_token_result(future):
+                    try:
+                        future.result()
+                        logger.debug("✅ Token sync task completed")
+                    except Exception as e:
+                        logger.warning(f"❌ Token sync task failed: {e}")
+
+                task.add_done_callback(handle_token_result)
 
                 # Log final token status
                 scene_info = f" (Scene: {scene_id})" if scene_id else ""

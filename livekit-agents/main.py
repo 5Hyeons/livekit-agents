@@ -28,14 +28,16 @@ from livekit.plugins import silero
 
 from core.wallmate_agent import WallmateAgent
 from core.session_manager import setup_session
-from core.user_profile import UserProfileManager
-from core.mongodb_manager import MongoDBManager
-from handlers.event_handlers import SessionEventHandlers  # Temporarily disabled
+from core.rest_api_manager import RestAPIManager
+from handlers.event_handlers import SessionEventHandlers
 from handlers.rpc_handlers import RPCHandlers
 
 # Load environment variables
 load_dotenv()
 logger = logging.getLogger("wallmate-main")
+
+# Environment variables
+DB_SERVER_URL = os.getenv("DB_SERVER_URL", "http://localhost:8018")
 
 
 
@@ -66,75 +68,75 @@ async def entrypoint(ctx: JobContext):
         ctx: Job context from LiveKit framework
     """
     logger.info(f"Connecting to room: {ctx.room.name}")
-    
+
     # Connect with audio-only subscription for STT
     await ctx.connect(auto_subscribe=AutoSubscribe.AUDIO_ONLY)
 
     # Wait for first participant
     participant = await ctx.wait_for_participant()
     logger.info(f"Starting wallmate agent for participant: {participant.identity}")
-    
-    # Initialize MongoDB Manager with environment variables
-    mongodb_uri = os.getenv("MONGODB_URI")
-    mongodb_database = os.getenv("MONGODB_DATABASE")
-    
-    mongodb_manager = MongoDBManager(uri=mongodb_uri, database=mongodb_database)
-    if not mongodb_manager.test_connection():
-        logger.error(f"Failed to connect to MongoDB: {mongodb_uri}")
-        raise ConnectionError("MongoDB connection failed")
-    
-    logger.info(f"MongoDB connected successfully to database: {mongodb_database}")
-    
+
+    # Initialize RestAPIManager (MongoDB 직접 접근 제거!)
+    api_manager = RestAPIManager(base_url=DB_SERVER_URL)
+
     # Setup session configuration
     setup_data = setup_session(participant)
-    
+
     # Extract room input and output options
     room_input_options = setup_data['room_input_options']
     room_output_options = setup_data['room_output_options']
-    
+
     # Get identity information
     user_identity = participant.identity
     thread_identity = f"{setup_data['scene_name']}_user-{user_identity}"
 
-    # Get complete user profile with token balance (async, integrated call)
-    try:
-        user_profile = await UserProfileManager.get_profile(
-            user_identity,
-            thread_identity,
-            mongodb_manager.store
-        )
-        user_profile["scene_id"] = setup_data["scene_name"]
-    except ValueError as e:
-        logger.error(f"Failed to get user profile: {e}")
-        # Critical error - cannot continue without profile and token info
-        raise ConnectionError(f"User profile initialization failed: {e}")
+    # 1. Load user profile (장기 메모리) - 없으면 자동 생성
+    user_profile = await api_manager.get_user_profile(thread_identity, user_id=user_identity, auto_create=True)
+
+    # 2. Load conversation history (단기 메모리)
+    chat_ctx = await api_manager.get_conversation(thread_identity, limit=50)
+
+    # 3. Load token balance
+    token_balance = await api_manager.get_token_balance(user_identity)
+
+    # 4. Construct userdata
+    user_profile = {
+        "user_id": user_identity,
+        "thread_id": thread_identity,
+        "scene_id": setup_data["scene_name"],
+        "name": user_profile.get("name", "Unknown"),
+        "token_info": {
+            **token_balance,
+            "token_to_deduct": 0  # Session usage accumulator
+        }
+    }
+
+    # Create agent instance
+    agent = WallmateAgent(
+        user_data=user_profile,
+        setup_data=setup_data,
+        chat_ctx=chat_ctx,  # 미리 로드한 대화 히스토리 주입!
+        api_manager=api_manager  # RestAPIManager 전달
+    )
 
     # Create agent session
     session = AgentSession(
         vad=ctx.proc.userdata["vad"],
         preemptive_generation=False,
         userdata=user_profile
-        )
-    
-    # Create usage collector for metrics (temporarily disabled)
-    usage_collector = metrics.UsageCollector()
-    
-    # Create agent instance with MongoDB manager
-    agent = WallmateAgent(
-        user_data=user_profile,
-        setup_data=setup_data,
-        mongodb_manager=mongodb_manager
     )
-    
-    # Create event handlers (MongoDB version)
-    # Event handlers temporarily disabled - MongoDB Checkpointer handles core functionality
+
+    # Create usage collector for metrics
+    usage_collector = metrics.UsageCollector()
+
+    # Create event handlers
     event_handlers = SessionEventHandlers(
         ctx=ctx,
         session=session,
         agent=agent,
         participant=participant,
         usage_collector=usage_collector,
-        mongodb_store=mongodb_manager.store
+        api_manager=api_manager  # RestAPIManager 전달
     )
     session.on("agent_state_changed", event_handlers.create_agent_state_handler())
     session.on("user_state_changed", event_handlers.create_user_state_handler())

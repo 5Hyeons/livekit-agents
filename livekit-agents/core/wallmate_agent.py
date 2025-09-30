@@ -17,12 +17,11 @@ from config import (
     ensure_logging_directories
 )
 from .model_factory import get_stt, get_tts, get_stf, get_llm
-# from .graph_builder import get_langgraph
 
 from livekit.agents import utils
 from livekit.agents import stt
 from livekit.agents.stt import SpeechEventType
-from livekit.agents.llm import function_tool
+from livekit.agents.llm import ChatContext, function_tool
 from livekit.agents.voice.agent import Agent, ModelSettings
 from livekit.rtc import AudioFrame
 
@@ -131,85 +130,95 @@ class WallmateAgent(Agent):
         self,
         user_data: dict,
         setup_data: dict,
-        mongodb_manager,  # MongoDBManager instance
+        chat_ctx: ChatContext,  # Pre-loaded conversation history
+        api_manager,  # RestAPIManager instance
     ):
         """
-        Initialize WallmateAgent with MongoDB-based memory.
+        Initialize WallmateAgent with REST API-based memory.
 
         Args:
-            setup_data: Setup data containing user language, custom persona, voice name, model name, and scene name
-            mongodb_manager: MongoDBManager instance for database operations
+            user_data: User data including user_id, thread_id, name, token_info
+            setup_data: Setup data containing language, persona, voice, model, scene
+            chat_ctx: Pre-loaded ChatContext with conversation history
+            api_manager: RestAPIManager for database operations via REST API
         """
-        self.mongodb_manager = mongodb_manager
-        # self.user_language = setup_data['user_language']
-        # self.custom_persona = setup_data['custom_persona']
-        # self.voice_name = setup_data['voice_name']
-        # self.model_name = setup_data['model_name']
-        # self.scene_name = setup_data['scene_name']
-
-        # Initialize logging directories for this user
         self.userdata = user_data
-        self.logging_enabled = (is_tts_logging_enabled(self.userdata["user_id"]) or 
+        self.api_manager = api_manager
+        # Initialize logging directories for this user
+        self.logging_enabled = (is_tts_logging_enabled(self.userdata["user_id"]) or
                                is_stt_logging_enabled(self.userdata["user_id"]))
         self.tts_output_dir = None
         self.stt_input_dir = None
-        
+
         if self.logging_enabled:
             logging_dirs = ensure_logging_directories(self.userdata["user_id"])
             self.tts_output_dir = logging_dirs["tts_output"]
             self.stt_input_dir = logging_dirs["stt_input"]
-            logger.info(f"Audio logging enabled for user: {self.userdata["user_id"]}")
+            logger.info(f"Audio logging enabled for user: {self.userdata['user_id']}")
         else:
             self.stt_input_dir = None
-            logger.debug(f"Audio logging disabled for user: {self.userdata["user_id"]}")
+            logger.debug(f"Audio logging disabled for user: {self.userdata['user_id']}")
 
         if setup_data['custom_persona']:
-            logger.info(f"Use Custom persona: {setup_data['custom_persona']}")
-
-        # Performance tracking is now handled in event_handlers.py
+            logger.info(f"Custom persona: {setup_data['custom_persona']}")
 
         # Create base instructions with persona
         base_instructions = create_instructions(
             setup_data['user_language'], custom_persona=setup_data['custom_persona']
         )
 
-        # Create empty chat context (MongoDB Checkpointer will handle history)
-        from livekit.agents.llm import ChatContext
-        chat_ctx = ChatContext()
-        
-        logger.info("Using MongoDB Checkpointer for conversation history")
+        logger.info(f"Using REST API for memory management (loaded {len(chat_ctx.items)} messages)")
 
-        # Initialize parent Agent with simple config
+        # Initialize parent Agent with pre-loaded chat context
         super().__init__(
             instructions=base_instructions,
-            chat_ctx=chat_ctx,
+            chat_ctx=chat_ctx,  # 미리 로드한 대화 히스토리
             stt=get_stt(setup_data['user_language']),
-            # llm=get_langgraph(
-            #     model_name=setup_data['model_name'], 
-            #     user_id=self.userdata["user_id"],
-            #     thread_id=self.userdata["thread_id"],
-            #     mongodb_manager=self.mongodb_manager
-            # ),
             llm=get_llm(),
             tts=get_tts(setup_data['voice_name']),
             stf=get_stf(),
         )
-    # MongoDB automatically handles conversation history through checkpoints
     
+
+    @function_tool()
+    async def save_user_name(self, name: str) -> str:
+        """
+        사용자가 자신의 이름을 소개할 때 이름을 저장합니다.
+
+        Args:
+            name: 저장할 사용자의 이름
+        """
+        thread_id = self.userdata.get("thread_id")
+
+        if not thread_id:
+            return "[SYSTEM_CONTEXT: 세션 오류로 이름을 저장할 수 없습니다.]"
+
+        # RestAPIManager를 통해 저장
+        success = await self.api_manager.update_user_profile(thread_id, {"name": name})
+
+        if success:
+            self.userdata["name"] = name  # 로컬 userdata도 업데이트
+            logger.info(f"✅ User name saved: {name}")
+            return f"[SYSTEM_CONTEXT: User '{name}' introduced themselves. Remember their name and respond naturally.]"
+        else:
+            logger.error(f"❌ Failed to save user name: {name}")
+            return f"[SYSTEM_CONTEXT: User '{name}' introduced themselves. Remember for this session only.]"
 
     async def on_enter(self):
         """
         Handle agent entry into conversation session.
-        Uses userdata to personalize greeting based on stored user profile.
+        Memory is already loaded in main.py and injected into chat_ctx.
         """
-        logger.info(f"WallmateAgent entering session for user: {self.userdata["user_id"]}")
-        
-        # Get user profile from session userdata
-        
+        logger.info(f"WallmateAgent entering session for user: {self.userdata['user_id']}")
+
+        # Get user name from already-loaded userdata
+        user_name = self.userdata.get("name", "Unknown")
+        chat_history_count = len(self.chat_ctx.items)
+
         # Generate personalized system context
-        system_context = f"[SYSTEM_CONTEXT: The user just joined. User name is {self.userdata["name"]}. Respond naturally.]"
-        logger.info(f"The User just joined: User name is {self.userdata["name"]}")
-        
+        system_context = f"[SYSTEM_CONTEXT: User '{user_name}' just joined. Respond naturally.]"
+        logger.info(f"User joined: {user_name} (chat history: {chat_history_count} messages)")
+
         await self.session.generate_reply(user_input=system_context, allow_interruptions=False)
 
     def _save_audio_frames_as_wav(self, audio_frames: list[AudioFrame], text_context: str = "", 
