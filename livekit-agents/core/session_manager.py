@@ -19,7 +19,7 @@ def parse_metadata(participant: rtc.RemoteParticipant) -> Dict[str, Any]:
         'user_language': 'ko',
         'custom_persona': '',
         'voice_name': 'FEMALE_1',
-        'model_name': 'gemini', 
+        'model_name': 'gpt', 
         'scene_name': 'default_scene'
     }
     
@@ -32,7 +32,7 @@ def parse_metadata(participant: rtc.RemoteParticipant) -> Dict[str, Any]:
             'user_language': validate_language(metadata.get('userLanguage', 'ko')),
             'custom_persona': metadata.get('customPersona', '').strip(),
             'voice_name': metadata.get('voiceName', 'FEMALE_1').strip() or 'FEMALE_1',
-            'model_name': metadata.get('modelName', 'gemini').strip() or 'gemini',
+            'model_name': metadata.get('modelName', 'gpt').strip() or 'gpt',
             'scene_name': metadata.get('sceneName', 'default_scene').strip() or 'default_scene'
         }
     except (json.JSONDecodeError, Exception) as e:
