@@ -118,7 +118,13 @@ class LangGraphStream(llm.LLMStream):
             if token_like is None:
                 continue
             
-            logger.warning(f"token_like: {token_like}")
+            # logger.warning(f"token_like: {token_like}")
+            if hasattr(token_like, 'content'):
+                logger.warning(f"  Content type: {type(token_like.content)}")
+                logger.warning(f"  Content value: {token_like.content}")
+            if hasattr(token_like, 'response_metadata'):
+                logger.warning(f"  Metadata: {token_like.response_metadata}")
+
             chat_chunk = _to_chat_chunk(token_like)
             if chat_chunk:
                 self._event_ch.send_nowait(chat_chunk)

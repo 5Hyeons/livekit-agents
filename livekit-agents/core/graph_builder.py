@@ -89,6 +89,7 @@ def create_graph_with_mongodb(model_name: str, thread_identity: str, mongodb_man
     # 채팅봇 노드
     def chatbot_node(state: State):
         response = llm_with_tools.invoke(state["messages"])
+        logger.debug(f"[LangGraph] Response: {response}")
         return {"messages": [response]}
 
     # 도구 실행 노드
@@ -129,7 +130,7 @@ def create_graph_with_mongodb(model_name: str, thread_identity: str, mongodb_man
     return builder.compile(checkpointer=checkpointer, store=mongodb_manager.store)
 
 
-def get_langgraph(model_name: str = "gemini", user_id: str = None, thread_id: str = None, mongodb_manager = None):
+def get_langgraph(model_name: str = "claude", user_id: str = None, thread_id: str = None, mongodb_manager = None):
     """Get LangGraph LLM with MongoDB checkpointer.""" 
     if model_name not in MODEL_CONFIGS:
         raise ValueError(f"Unsupported model: {model_name}. Available: {list(MODEL_CONFIGS.keys())}")
