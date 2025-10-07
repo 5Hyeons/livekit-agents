@@ -105,6 +105,8 @@ class STFMetrics(BaseModel):
     frames_generated: int
     """Number of animation frames generated."""
     speech_id: str | None = None
+    
+    metadata: Metadata | None = None
 
 
 class RealtimeModelMetrics(BaseModel):
