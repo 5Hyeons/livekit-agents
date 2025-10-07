@@ -37,7 +37,7 @@ load_dotenv()
 logger = logging.getLogger("wallmate-main")
 
 # Environment variables
-DB_SERVER_URL = os.getenv("DB_SERVER_URL", "http://localhost:8018")
+DB_SERVER_URL = os.getenv("DB_SERVER_URL", "http://localhost:8028")
 
 
 
@@ -165,6 +165,6 @@ if __name__ == "__main__":
             prewarm_fnc=prewarm,
             shutdown_process_timeout= 10.0,
             drain_timeout=15.0,
-            port=8085
+            port=8095
         ),
     )

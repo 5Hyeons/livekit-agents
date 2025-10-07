@@ -142,7 +142,7 @@ class UserProfileManager:
         Returns:
             Token balance data or None if failed
         """
-        base_url = os.getenv("WALLMATE_DB_SERVER_URL", "http://localhost:8018")
+        base_url = os.getenv("WALLMATE_DB_SERVER_URL", "http://localhost:8028")
 
         try:
             timeout = aiohttp.ClientTimeout(total=5.0)
@@ -185,7 +185,7 @@ class UserProfileManager:
         Returns:
             True if successful, False otherwise
         """
-        base_url = os.getenv("WALLMATE_DB_SERVER_URL", "http://localhost:8018")
+        base_url = os.getenv("WALLMATE_DB_SERVER_URL", "http://localhost:8028")
 
         try:
             timeout = aiohttp.ClientTimeout(total=5.0)
@@ -233,7 +233,7 @@ class UserProfileManager:
             logger.debug(f"[UserProfile] No tokens used for {user_identity}, skipping sync")
             return True
 
-        base_url = os.getenv("WALLMATE_DB_SERVER_URL", "http://localhost:8018")
+        base_url = os.getenv("WALLMATE_DB_SERVER_URL", "http://localhost:8028")
 
         try:
             timeout = aiohttp.ClientTimeout(total=10.0)  # Longer timeout for final sync

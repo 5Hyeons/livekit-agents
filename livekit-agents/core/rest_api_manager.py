@@ -16,7 +16,7 @@ class RestAPIManager:
     모든 데이터베이스 작업을 REST API를 통해 수행.
     """
 
-    def __init__(self, base_url: str = "http://localhost:8018"):
+    def __init__(self, base_url: str = "http://localhost:8028"):
         """
         Initialize RestAPIManager.
 
