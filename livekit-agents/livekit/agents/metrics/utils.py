@@ -79,8 +79,7 @@ def log_metrics(metrics: AgentMetrics, *, logger: logging.Logger | None = None) 
     elif isinstance(metrics, STFMetrics):
         logger.info(
             "STF metrics",
-            extra=metadata
-             | {
+            extra={
                 "ttff": round(metrics.ttff, 2),
                 "audio_duration": round(metrics.audio_duration, 2),
                 "frames_generated": metrics.frames_generated,
