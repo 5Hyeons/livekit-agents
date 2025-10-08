@@ -88,9 +88,9 @@ class SessionEventHandlers:
         else:
             logger.debug(f"Metrics logging disabled for user: {self.participant.identity}")
         
-        # Token status tracking for RPC notifications
-        self._last_token_status = "normal"  # Track previous status to detect changes
-        self._token_thresholds = {
+        # Credit status tracking for RPC notifications
+        self._last_credit_status = "normal"  # Track previous status to detect changes
+        self._credit_thresholds = {
             "critical": 200,
             "low": 500
         }
@@ -294,41 +294,41 @@ class SessionEventHandlers:
 
                 task.add_done_callback(handle_save_result)
 
-            # 2. Sync final token usage to wallmate-db-server
-            token_info = self.session.userdata.get("token_info", {})
-            tokens_used = token_info.get("token_to_deduct", 0)
+            # 2. Sync final credit usage to wallmate-db-server
+            credit_info = self.session.userdata.get("credit_info", {})
+            credits_used = credit_info.get("credit_to_deduct", 0)
 
-            if tokens_used > 0 and self.api_manager:
+            if credits_used > 0 and self.api_manager:
                 user_id = self.session.userdata["user_id"]
                 scene_id = self.session.userdata["scene_id"]
 
                 # Use RestAPIManager instead of UserProfileManager
                 task = asyncio.create_task(
-                    self.api_manager.sync_token_usage(
+                    self.api_manager.sync_credit_usage(
                         user_id,
                         scene_id,
-                        tokens_used,
+                        credits_used,
                         f"Voice session [{scene_id}]"
                     )
                 )
 
-                def handle_token_result(future):
+                def handle_credit_result(future):
                     try:
                         future.result()
-                        logger.debug("✅ Token sync task completed")
+                        logger.debug("✅ Credit sync task completed")
                     except Exception as e:
-                        logger.warning(f"❌ Token sync task failed: {e}")
+                        logger.warning(f"❌ Credit sync task failed: {e}")
 
-                task.add_done_callback(handle_token_result)
+                task.add_done_callback(handle_credit_result)
 
-                # Log final token status
+                # Log final credit status
                 scene_info = f" (Scene: {scene_id})" if scene_id else ""
                 logger.info(
-                    f"  📈 Used This Session: {tokens_used}{scene_info}\n"
+                    f"  📈 Used This Session: {credits_used}{scene_info}\n"
                     f"  🔄 Syncing to wallmate-db-server..."
                 )
             else:
-                logger.info("📊 No tokens used this session, skipping sync")
+                logger.info("📊 No credits used this session, skipping sync")
 
             # Prepare close reason details
             close_details = {
@@ -400,41 +400,6 @@ class SessionEventHandlers:
         self.llm_ttft = llm_metrics.ttft * 1000  # Convert to ms
         logger.debug(f"🧠 LLM TTFT: {self.llm_ttft:.0f}ms")
         
-        # # 데이터베이스에 실시간 저장
-        # try:
-        #     # metrics 객체를 dict로 변환
-        #     metrics_dict = {
-        #         'request_id': llm_metrics.request_id,
-        #         'prompt_tokens': llm_metrics.prompt_tokens,
-        #         'prompt_cached_tokens': llm_metrics.prompt_cached_tokens,
-        #         'completion_tokens': llm_metrics.completion_tokens,
-        #         'total_tokens': llm_metrics.total_tokens,
-        #         'duration': llm_metrics.duration,
-        #         'cancelled': llm_metrics.cancelled,
-        #         'label': llm_metrics.label,
-        #         'ttft': llm_metrics.ttft,
-        #         'tokens_per_second': llm_metrics.tokens_per_second,
-        #         'speech_id': llm_metrics.speech_id
-        #     }
-            
-        #     # DB에 저장
-        #     self.db.save_llm_usage(
-        #         participant_id=self.participant.identity,
-        #         session_id=self.user_data.session_id,
-        #         metrics=metrics_dict
-        #     )
-            
-        #     # 실시간 사용량 로깅
-        #     logger.info(
-        #         f"💾 LLM Usage Saved - Tokens: {llm_metrics.total_tokens} "
-        #         f"(prompt: {llm_metrics.prompt_tokens}, "
-        #         f"cached: {llm_metrics.prompt_cached_tokens}, "
-        #         f"completion: {llm_metrics.completion_tokens})"
-        #     )
-            
-        # except Exception as e:
-        #     logger.error(f"Failed to save LLM usage to database: {e}")
-
     def _handle_tts_metrics(self, tts_metrics: metrics.TTSMetrics):
         """Handle TTS metrics and save to database."""
         self.tts_ttfb = tts_metrics.ttfb * 1000  # Convert to ms
@@ -459,28 +424,21 @@ class SessionEventHandlers:
             # MongoDB Checkpointer handles metrics automatically
             logger.debug(f"TTS metrics: {metrics_dict}")
             
-            # Simple memory-based token deduction (efficient!)
+            # Simple memory-based credit deduction (efficient!)
             characters_used = tts_metrics.characters_count
-            tokens_to_deduct = characters_used  # 1 characters = 1 token
-            # Deduct tokens directly from session memory
-            token_info = self.session.userdata["token_info"]
-            token_info["token_to_deduct"] += tokens_to_deduct
-            # Check token status and notify client
-            # self._check_and_notify_token_status(remaining_tokens, characters_used)
-            
-            # Log token usage
+            credits_to_deduct = characters_used  # 1 characters = 1 credit
+            # Deduct credits directly from session memory
+            credit_info = self.session.userdata["credit_info"]
+            credit_info["credit_to_deduct"] += credits_to_deduct
+            # Check credit status and notify client
+            # self._check_and_notify_credit_status(remaining_credits, characters_used)
+
+            # Log credit usage
             logger.info(
                 f"💾 TTS Usage - Characters: {characters_used}, "
-                f"Tokens deducted: {tokens_to_deduct}, "
-                f"Token to deduct: {token_info['token_to_deduct']}"
+                f"Credits deducted: {credits_to_deduct}, "
+                f"Credit to deduct: {credit_info['credit_to_deduct']}"
             )
-            
-            # # 실시간 사용량 로깅 (토큰 정보 포함)
-            # logger.info(
-            #     f"💾 TTS Usage Saved - Characters: {tts_metrics.characters_count}, "
-            #     f"Audio: {tts_metrics.audio_duration:.2f}s, "
-            #     f"Remaining Tokens: {remaining_tokens}"
-            # )
             
         except Exception as e:
             logger.error(f"Failed to save TTS usage to database: {e}")
@@ -510,44 +468,44 @@ class SessionEventHandlers:
         _ = stt_metrics  # Acknowledge parameter to avoid linting warning
         pass
 
-    def _check_and_notify_token_status(self, remaining_tokens: int, characters_used: int):
-        """토큰 상태 확인 및 필요시 RPC 알림 전송"""
-        
+    def _check_and_notify_credit_status(self, remaining_credits: int, characters_used: int):
+        """크레딧 상태 확인 및 필요시 RPC 알림 전송"""
+
         # 현재 상태 결정
-        if remaining_tokens == 0:
+        if remaining_credits == 0:
             current_status = "depleted"
-            message = "Your tokens are depleted"
-        elif remaining_tokens <= self._token_thresholds["critical"]:
+            message = "Your credits are depleted"
+        elif remaining_credits <= self._credit_thresholds["critical"]:
             current_status = "critical"
-            message = f"Critical: Only {remaining_tokens} tokens remaining"
-        elif remaining_tokens <= self._token_thresholds["low"]:
+            message = f"Critical: Only {remaining_credits} credits remaining"
+        elif remaining_credits <= self._credit_thresholds["low"]:
             current_status = "low"
-            message = f"Low balance: {remaining_tokens} tokens remaining"
+            message = f"Low balance: {remaining_credits} credits remaining"
         else:
             current_status = "normal"
-            message = f"Normal: {remaining_tokens} tokens remaining"
-        
+            message = f"Normal: {remaining_credits} credits remaining"
+
         # 상태 변경 감지 (악화된 경우만 알림)
         should_notify = False
-        if current_status == "depleted" and self._last_token_status != "depleted":
+        if current_status == "depleted" and self._last_credit_status != "depleted":
             should_notify = True
-        elif current_status == "critical" and self._last_token_status in ["low", "normal"]:
+        elif current_status == "critical" and self._last_credit_status in ["low", "normal"]:
             should_notify = True
-        elif current_status == "low" and self._last_token_status == "normal":
+        elif current_status == "low" and self._last_credit_status == "normal":
             should_notify = True
-        
+
         # RPC 전송
         if should_notify:
             try:
-                # Get token info from session userdata instead of database
-                token_info = self.session.userdata.get("token_info", {})
-                total_granted = token_info["total_earned"]
-                total_used = token_info["total_spent"]
-                percentage = (remaining_tokens / total_granted * 100) if total_granted > 0 else 0
+                # Get credit info from session userdata instead of database
+                credit_info = self.session.userdata.get("credit_info", {})
+                total_granted = credit_info["total_earned"]
+                total_used = credit_info["total_spent"]
+                percentage = (remaining_credits / total_granted * 100) if total_granted > 0 else 0
 
                 payload = json.dumps({
                     "status": current_status,
-                    "remaining_tokens": remaining_tokens,
+                    "remaining_credits": remaining_credits,
                     "total_granted": total_granted,
                     "total_used": total_used,
                     "percentage_remaining": round(percentage, 1),
@@ -555,37 +513,37 @@ class SessionEventHandlers:
                         "characters": characters_used,
                         "timestamp": time.time()
                     },
-                    "thresholds": self._token_thresholds,
+                    "thresholds": self._credit_thresholds,
                     "message": message
                 })
-                
+
                 task = asyncio.create_task(
                     self.ctx.room.local_participant.perform_rpc(
                         destination_identity=self.participant.identity,
-                        method="token_status_update",
+                        method="credit_status_update",
                         payload=payload,
                         response_timeout=1.0
                     )
                 )
-                
+
                 # Add completion callback for error logging
                 def handle_rpc_result(future):
                     try:
                         future.result()
-                        logger.debug(f"Token status RPC sent successfully: {current_status}")
+                        logger.debug(f"Credit status RPC sent successfully: {current_status}")
                     except Exception as e:
-                        logger.warning(f"Failed to send token status RPC: {e}")
-                
+                        logger.warning(f"Failed to send credit status RPC: {e}")
+
                 task.add_done_callback(handle_rpc_result)
-                
+
                 # 로깅
-                logger.info(f"📢 Token status RPC sent: {current_status} - {message}")
-                
+                logger.info(f"📢 Credit status RPC sent: {current_status} - {message}")
+
             except Exception as e:
-                logger.error(f"Error sending token status RPC: {e}")
-            
+                logger.error(f"Error sending credit status RPC: {e}")
+
             # 상태 업데이트
-            self._last_token_status = current_status
+            self._last_credit_status = current_status
     
     def _log_complete_metrics(self):
         """Log complete reactivity breakdown with E2E."""

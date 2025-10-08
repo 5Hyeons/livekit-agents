@@ -96,8 +96,8 @@ async def entrypoint(ctx: JobContext):
     # 2. Load conversation history (단기 메모리)
     chat_ctx = await api_manager.get_conversation(thread_identity, limit=50)
 
-    # 3. Load token balance
-    token_balance = await api_manager.get_token_balance(user_identity)
+    # 3. Load credits balance
+    credits_balance = await api_manager.get_credits_balance(user_identity)
 
     # 4. Construct userdata
     user_profile = {
@@ -105,9 +105,9 @@ async def entrypoint(ctx: JobContext):
         "thread_id": thread_identity,
         "scene_id": setup_data["scene_name"],
         "name": user_profile.get("name", "Unknown"),
-        "token_info": {
-            **token_balance,
-            "token_to_deduct": 0  # Session usage accumulator
+        "credit_info": {
+            **credits_balance,
+            "credit_to_deduct": 0  # Session usage accumulator
         }
     }
 

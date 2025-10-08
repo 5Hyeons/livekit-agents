@@ -1,4 +1,4 @@
-"""MongoDB-based user profile management with token balance integration."""
+"""MongoDB-based user profile management with credits balance integration."""
 
 import logging
 import os
@@ -18,7 +18,7 @@ class UserProfileManager:
     @staticmethod
     async def get_profile(user_identity: str, thread_identity: str, store) -> Dict[str, Any]:
         """
-        Get user profile with token balance from MongoDB store and wallmate-db-server.
+        Get user profile with credits balance from MongoDB store and wallmate-db-server.
         Creates thread profile if it doesn't exist.
 
         Args:
@@ -27,10 +27,10 @@ class UserProfileManager:
             store: MongoDB store instance
 
         Returns:
-            User profile data with integrated token info
+            User profile data with integrated credits info
 
         Raises:
-            ValueError: If user_identity is missing or token balance fails
+            ValueError: If user_identity is missing or credits balance fails
         """
         if not user_identity:
             raise ValueError("user_identity is required")
@@ -62,18 +62,18 @@ class UserProfileManager:
             profile = profile_data.value
             logger.info(f"[UserProfile] Loaded profile for thread: {thread_identity} (user: {user_identity})")
 
-            # 2. Get token balance from wallmate-db-server
-            token_info = await UserProfileManager.get_token_balance(user_identity)
+            # 2. Get credits balance from wallmate-db-server
+            credit_info = await UserProfileManager.get_credits_balance(user_identity)
 
-            if not token_info:
-                raise ValueError(f"Failed to get token balance for user: {user_identity}")
+            if not credit_info:
+                raise ValueError(f"Failed to get credits balance for user: {user_identity}")
 
-            # 3. Integrate token info into profile
-            profile["token_info"] = token_info
+            # 3. Integrate credits info into profile
+            profile["credit_info"] = credit_info
             profile["thread_id"] = thread_identity
             profile["user_id"] = user_identity
 
-            logger.info(f"[UserProfile] Complete profile loaded with {token_info['remaining']} tokens for: {user_identity}")
+            logger.info(f"[UserProfile] Complete profile loaded with {credit_info['remaining']} credits for: {user_identity}")
             return profile
 
         except ValueError:
@@ -132,44 +132,44 @@ class UserProfileManager:
             return False
 
     @staticmethod
-    async def get_token_balance(user_identity: str) -> Optional[Dict[str, Any]]:
+    async def get_credits_balance(user_identity: str) -> Optional[Dict[str, Any]]:
         """
-        Get token balance from wallmate-db-server for session startup.
+        Get credits balance from wallmate-db-server for session startup.
 
         Args:
             user_identity: The user's identity (user_id)
 
         Returns:
-            Token balance data or None if failed
+            Credits balance data or None if failed
         """
         base_url = os.getenv("WALLMATE_DB_SERVER_URL", "http://localhost:8028")
 
         try:
             timeout = aiohttp.ClientTimeout(total=5.0)
             async with aiohttp.ClientSession(timeout=timeout) as session:
-                url = f"{base_url}/api/token/balance/{user_identity}"
+                url = f"{base_url}/api/credits/balance/{user_identity}"
 
                 async with session.get(url) as response:
                     if response.status == 200:
                         data = await response.json()
                         if data.get("success"):
-                            logger.info(f"[UserProfile] Retrieved token balance for {user_identity}: {data['current_tokens']} tokens")
+                            logger.info(f"[UserProfile] Retrieved credits balance for {user_identity}: {data['current_credits']} credits")
                             return {
-                                "remaining": data["current_tokens"],
+                                "remaining": data["current_credits"],
                                 "total_earned": data["total_earned"],
-                                "total_spent": data["total_spent"],  # Use this instead of total_used
+                                "total_spent": data["total_spent"],
                                 "status": "normal",
-                                "token_to_deduct": 0
+                                "credit_to_deduct": 0
                             }
                         else:
-                            logger.error(f"[UserProfile] Token balance API returned failure: {data}")
+                            logger.error(f"[UserProfile] Credits balance API returned failure: {data}")
                     else:
-                        logger.error(f"[UserProfile] Token balance API returned status {response.status}")
+                        logger.error(f"[UserProfile] Credits balance API returned status {response.status}")
 
         except asyncio.TimeoutError:
-            logger.error(f"[UserProfile] Timeout getting token balance for {user_identity}")
+            logger.error(f"[UserProfile] Timeout getting credits balance for {user_identity}")
         except Exception as e:
-            logger.error(f"[UserProfile] Error getting token balance for {user_identity}: {e}")
+            logger.error(f"[UserProfile] Error getting credits balance for {user_identity}: {e}")
 
         return None
 
@@ -216,21 +216,21 @@ class UserProfileManager:
         return False
 
     @staticmethod
-    async def sync_token_usage(user_identity: str, scene_id: str, tokens_used: int, description: str = "Session usage") -> bool:
+    async def sync_credits_usage(user_identity: str, scene_id: str, credits_used: int, description: str = "Session usage") -> bool:
         """
-        Sync token usage to wallmate-db-server at session end.
+        Sync credits usage to wallmate-db-server at session end.
 
         Args:
             user_identity: The user's identity (user_id)
             scene_id: Scene identifier for tracking scene-specific usage
-            tokens_used: Total tokens used during session
+            credits_used: Total credits used during session
             description: Description of usage
 
         Returns:
             True if successful, False otherwise
         """
-        if tokens_used <= 0:
-            logger.debug(f"[UserProfile] No tokens used for {user_identity}, skipping sync")
+        if credits_used <= 0:
+            logger.debug(f"[UserProfile] No credits used for {user_identity}, skipping sync")
             return True
 
         base_url = os.getenv("WALLMATE_DB_SERVER_URL", "http://localhost:8028")
@@ -238,12 +238,12 @@ class UserProfileManager:
         try:
             timeout = aiohttp.ClientTimeout(total=10.0)  # Longer timeout for final sync
             async with aiohttp.ClientSession(timeout=timeout) as session:
-                url = f"{base_url}/api/token/use"
+                url = f"{base_url}/api/credits/use"
 
                 payload = {
                     "user_id": user_identity,
                     "scene_id": scene_id,
-                    "amount": tokens_used,
+                    "amount": credits_used,
                     "description": description,
                     "item_name": "Voice Session"
                 }
@@ -252,17 +252,17 @@ class UserProfileManager:
                     if response.status == 200:
                         data = await response.json()
                         if data.get("success"):
-                            logger.info(f"[UserProfile] Synced token usage for {user_identity}: {tokens_used} tokens used")
+                            logger.info(f"[UserProfile] Synced credits usage for {user_identity}: {credits_used} credits used")
                             return True
                         else:
-                            logger.error(f"[UserProfile] Token sync API returned failure: {data}")
+                            logger.error(f"[UserProfile] Credits sync API returned failure: {data}")
                     else:
-                        logger.error(f"[UserProfile] Token sync API returned status {response.status}")
+                        logger.error(f"[UserProfile] Credits sync API returned status {response.status}")
 
         except asyncio.TimeoutError:
-            logger.error(f"[UserProfile] Timeout syncing token usage for {user_identity}")
+            logger.error(f"[UserProfile] Timeout syncing credits usage for {user_identity}")
         except Exception as e:
-            logger.error(f"[UserProfile] Error syncing token usage for {user_identity}: {e}")
+            logger.error(f"[UserProfile] Error syncing credits usage for {user_identity}: {e}")
 
         return False
 

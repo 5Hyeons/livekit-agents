@@ -202,47 +202,47 @@ class RestAPIManager:
         return success
 
     # ============================================================
-    # TOKEN MANAGEMENT
+    # CREDIT MANAGEMENT
     # ============================================================
 
-    async def get_token_balance(self, user_id: str) -> dict:
+    async def get_credits_balance(self, user_id: str) -> dict:
         """
-        토큰 잔액 조회.
+        크레딧 잔액 조회.
 
         Args:
             user_id: User identifier
 
         Returns:
-            Token balance dict
+            Credit balance dict
         """
-        result = await self._call("GET", f"/api/users/{user_id}/tokens")
+        result = await self._call("GET", f"/api/users/{user_id}/credits")
 
         if result and result.get("success"):
             balance = {
-                "current_tokens": result.get("current_tokens", 0),
-                "total_earned": result.get("total_earned", 0),
-                "total_spent": result.get("total_spent", 0)
+                "current_credits": result.get("current_credits", 0),
+                "total_credits_earned": result.get("total_credits_earned", 0),
+                "total_credits_spent": result.get("total_credits_spent", 0)
             }
-            logger.info(f"✅ Token balance: {balance['current_tokens']} tokens")
+            logger.info(f"✅ Credit balance: {balance['current_credits']} credits")
             return balance
         else:
-            logger.warning("Failed to get token balance - returning zero")
-            return {"current_tokens": 0, "total_earned": 0, "total_spent": 0}
+            logger.warning("Failed to get credit balance - returning zero")
+            return {"current_credits": 0, "total_credits_earned": 0, "total_credits_spent": 0}
 
-    async def sync_token_usage(self, user_id: str, scene_id: str, amount: int, description: str) -> bool:
+    async def sync_credit_usage(self, user_id: str, scene_id: str, amount: int, description: str) -> bool:
         """
-        토큰 사용 동기화 (wallmate-db-server에 전송).
+        크레딧 사용 동기화 (wallmate-db-server에 전송).
 
         Args:
             user_id: User identifier
             scene_id: Scene identifier
-            amount: Tokens to deduct
+            amount: Credits to deduct
             description: Usage description
 
         Returns:
             Success status
         """
-        result = await self._call("DELETE", f"/api/users/{user_id}/tokens", {
+        result = await self._call("DELETE", f"/api/users/{user_id}/credits", {
             "amount": amount,
             "scene_id": scene_id,
             "description": description
@@ -250,10 +250,10 @@ class RestAPIManager:
 
         if result and result.get("success"):
             new_balance = result.get("new_balance", 0)
-            logger.info(f"✅ Token sync: -{amount} tokens (balance: {new_balance})")
+            logger.info(f"✅ Credit sync: -{amount} credits (balance: {new_balance})")
             return True
         else:
-            logger.error(f"❌ Token sync failed: {amount} tokens")
+            logger.error(f"❌ Credit sync failed: {amount} credits")
             return False
 
 
