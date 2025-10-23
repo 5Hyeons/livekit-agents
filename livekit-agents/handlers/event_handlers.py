@@ -430,6 +430,8 @@ class SessionEventHandlers:
             # Deduct credits directly from session memory
             credit_info = self.session.userdata["credit_info"]
             credit_info["credit_to_deduct"] += credits_to_deduct
+            # Deduct credits directly from session memory
+            credit_info["current_credits"] -= credits_to_deduct
             # Check credit status and notify client
             # self._check_and_notify_credit_status(remaining_credits, characters_used)
 
@@ -437,7 +439,8 @@ class SessionEventHandlers:
             logger.info(
                 f"💾 TTS Usage - Characters: {characters_used}, "
                 f"Credits deducted: {credits_to_deduct}, "
-                f"Credit to deduct: {credit_info['credit_to_deduct']}"
+                f"Remaining: {credit_info['current_credits']}, "
+                f"Total deducted: {credit_info['credit_to_deduct']}"
             )
             
         except Exception as e:

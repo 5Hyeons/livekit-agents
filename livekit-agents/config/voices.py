@@ -24,7 +24,7 @@ class ElevenLabsConfig:
     voice_settings: VoiceSettings
     
     @classmethod
-    def from_voice_name(cls, voice_name: str) -> 'ElevenLabsConfig':
+    def from_voice_name(cls, voice_name: str, voice_speed_offset: float = 0.0) -> 'ElevenLabsConfig':
         """
         Map voice name to ElevenLabs configuration.
         
@@ -44,7 +44,7 @@ class ElevenLabsConfig:
                     stability=0.5,
                     similarity_boost=0.75,
                     style=0.0,
-                    speed=1.0,
+                    speed=min(max(0.7, 1.0 + voice_speed_offset), 1.2),
                 ),
             ),
             # Lilirose
@@ -55,7 +55,7 @@ class ElevenLabsConfig:
                     stability=0.5,
                     similarity_boost=0.4,
                     style=0.0,
-                    speed=1.2,
+                    speed=min(max(0.7, 1.2 + voice_speed_offset), 1.2),
                 ),
             ),
             # Morioki
@@ -66,7 +66,7 @@ class ElevenLabsConfig:
                     stability=0.65,
                     similarity_boost=0.5,
                     style=0.0,
-                    speed=1.1,
+                    speed=min(max(0.7, 1.1 + voice_speed_offset), 1.2),
                 ),
             ),
             # Ana-Rita 
@@ -77,7 +77,7 @@ class ElevenLabsConfig:
                     stability=0.5,
                     similarity_boost=0.75,
                     style=0.0,
-                    speed=1.1,
+                    speed=min(max(0.7, 1.1 + voice_speed_offset), 1.2),
                 ),
             ),
             "MALE_1": cls(
@@ -87,7 +87,7 @@ class ElevenLabsConfig:
                     stability=0.88,
                     similarity_boost=0.74,
                     style=0.34,
-                    speed=1.07,
+                    speed=min(max(0.7, 1.07 + voice_speed_offset), 1.2),
                 ),
             ),
             # David martin
@@ -98,7 +98,7 @@ class ElevenLabsConfig:
                     stability=0.5,
                     similarity_boost=0.75,
                     style=0.0,
-                    speed=1.1,
+                    speed=min(max(0.7, 1.1 + voice_speed_offset), 1.2),
                 ),
             ),
             # Hinata
@@ -109,7 +109,7 @@ class ElevenLabsConfig:
                     stability=0.5,
                     similarity_boost=0.35,
                     style=0.0,
-                    speed=1.05,
+                    speed=min(max(0.7, 1.05 + voice_speed_offset), 1.2),
                 ),
             ),
             # Hadou
@@ -120,7 +120,7 @@ class ElevenLabsConfig:
                     stability=0.7,
                     similarity_boost=0.85,
                     style=0.0,
-                    speed=1.00,
+                    speed=min(max(0.7, 1.00 + voice_speed_offset), 1.2),
                 ),
             ),
             # DK_1
@@ -131,7 +131,7 @@ class ElevenLabsConfig:
                     stability=0.75,
                     similarity_boost=0.75,
                     style=0.0,
-                    speed=1.0,
+                    speed=min(max(0.7, 1.0 + voice_speed_offset), 1.2),
                 ),
             ),
         }

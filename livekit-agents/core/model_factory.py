@@ -27,10 +27,10 @@ def get_llm(model_provider: str = "google"):
         case _:
             raise ValueError(f"Invalid model provider: {model_provider}")
 
-def get_tts(voice_name: str = "FEMALE_1"):
+def get_tts(voice_name: str = "FEMALE_1", voice_speed_offset: float = 0.0):
     """Get ElevenLabs TTS configuration."""
     from config.voices import ElevenLabsConfig
-    return ElevenLabsConfig.from_voice_name(voice_name).create_tts()
+    return ElevenLabsConfig.from_voice_name(voice_name, voice_speed_offset).create_tts()
 
 
 def get_stf():

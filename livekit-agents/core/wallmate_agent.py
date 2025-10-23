@@ -21,7 +21,7 @@ from .model_factory import get_stt, get_tts, get_stf, get_llm
 from livekit.agents import utils
 from livekit.agents import stt
 from livekit.agents.stt import SpeechEventType
-from livekit.agents.llm import ChatContext, function_tool
+from livekit.agents.llm import ChatContext, FunctionTool, function_tool
 from livekit.agents.voice.agent import Agent, ModelSettings
 from livekit.rtc import AudioFrame
 
@@ -137,7 +137,7 @@ class WallmateAgent(Agent):
         Initialize WallmateAgent with REST API-based memory.
 
         Args:
-            user_data: User data including user_id, thread_id, name, token_info
+            user_data: User data including user_id, thread_id, name, credit_info
             setup_data: Setup data containing language, persona, voice, model, scene
             chat_ctx: Pre-loaded ChatContext with conversation history
             api_manager: RestAPIManager for database operations via REST API
@@ -164,7 +164,7 @@ class WallmateAgent(Agent):
 
         # Create base instructions with persona
         base_instructions = create_instructions(
-            setup_data['user_language'], custom_persona=setup_data['custom_persona']
+            setup_data['agent_language'], custom_persona=setup_data['custom_persona']
         )
 
         logger.info(f"Using REST API for memory management (loaded {len(chat_ctx.items)} messages)")
@@ -175,7 +175,7 @@ class WallmateAgent(Agent):
             chat_ctx=chat_ctx,  # 미리 로드한 대화 히스토리
             stt=get_stt(setup_data['user_language']),
             llm=get_llm(),
-            tts=get_tts(setup_data['voice_name']),
+            tts=get_tts(setup_data['voice_name'], setup_data['voice_speed_offset']),
             stf=get_stf(),
         )
     
@@ -221,7 +221,33 @@ class WallmateAgent(Agent):
 
         await self.session.generate_reply(user_input=system_context, allow_interruptions=False)
 
-    def _save_audio_frames_as_wav(self, audio_frames: list[AudioFrame], text_context: str = "", 
+    async def llm_node(
+        self, chat_ctx: ChatContext, tools: list[FunctionTool], model_settings: ModelSettings
+    ):
+        """
+        Override LLM node to check credit balance before processing.
+        If credits are depleted, inject a system context message.
+        """
+        # Check credit balance
+        current_credits = self.userdata["credit_info"]["current_credits"]
+
+        if current_credits <= 0:
+            # Replace user's actual message with system context about credit depletion
+            if chat_ctx.items and chat_ctx.items[-1].role == "user":
+                # Remove original user message
+                chat_ctx.items.pop()
+
+                # Add system context about credit depletion (agent will respond naturally in persona)
+                system_message = (
+                    "[SYSTEM_CONTEXT: User has run out of credits and cannot continue the conversation. "
+                    "Inform them naturally about this situation while staying in character.]"
+                )
+                chat_ctx.add_message(role="user", content=system_message)
+
+        # Call default llm_node implementation
+        return Agent.default.llm_node(self, chat_ctx, tools, model_settings)
+
+    def _save_audio_frames_as_wav(self, audio_frames: list[AudioFrame], text_context: str = "",
                                   audio_type: str = "tts"):
         """
         Save accumulated audio frames as a WAV file for allowed users only.

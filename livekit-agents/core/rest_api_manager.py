@@ -242,7 +242,8 @@ class RestAPIManager:
         Returns:
             Success status
         """
-        result = await self._call("DELETE", f"/api/users/{user_id}/credits", {
+        result = await self._call("POST", f"/api/users/{user_id}/credits/transactions", {
+            "type": "use",
             "amount": amount,
             "scene_id": scene_id,
             "description": description
@@ -250,7 +251,15 @@ class RestAPIManager:
 
         if result and result.get("success"):
             new_balance = result.get("new_balance", 0)
-            logger.info(f"✅ Credit sync: -{amount} credits (balance: {new_balance})")
+            actual_amount = result.get("actual_amount", amount)
+
+            # 부분 차감 경고 처리
+            if result.get("partial_deduction"):
+                logger.warning(f"⚠️ Partial credit deduction: {result.get('warning')}")
+                logger.info(f"✅ Credit sync (partial): -{actual_amount}/{amount} credits (balance: {new_balance})")
+            else:
+                logger.info(f"✅ Credit sync: -{actual_amount} credits (balance: {new_balance})")
+
             return True
         else:
             logger.error(f"❌ Credit sync failed: {amount} credits")

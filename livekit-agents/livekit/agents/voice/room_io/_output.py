@@ -565,6 +565,15 @@ class _ParticipantAnimationOutput(io.AnimationDataOutput):
             attributes=attributes,
         )
 
+    # async def capture_frame(self, data: stf.AnimationData) -> None:
+    #     # WebGL: publish_data() 사용 (Temporal Test Code) 
+    #     await self._room.local_participant.publish_data(
+    #         payload=data.data,  # 208 bytes (52 floats)
+    #         reliable=True,
+    #         destination_identities=[self._participant_identity],
+    #     )
+    #     self._frames_count += 1
+
     async def capture_frame(self, data: stf.AnimationData) -> None:
         """애니메이션 프레임 데이터를 캡처합니다."""
         if self._participant_identity is None:
