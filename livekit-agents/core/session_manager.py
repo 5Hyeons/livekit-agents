@@ -49,15 +49,15 @@ def create_room_options(participant: rtc.RemoteParticipant):
     room_input = RoomInputOptions(
         audio_enabled=True,
         video_enabled=False,
-        text_enabled=False,
+        text_enabled=True,
         participant_identity=participant.identity,
     )
     
     room_output = RoomOutputOptions(
         audio_enabled=True,          # Audio handled by animation stream
-        transcription_enabled=False,  # Text transcription disabled
+        transcription_enabled=True,  # Text transcription enabled
         animation_enabled=True,       # Face animation data enabled
-        sync_transcription=False,
+        sync_transcription=True,
     )
     
     return room_input, room_output

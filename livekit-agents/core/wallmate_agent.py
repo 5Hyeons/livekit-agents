@@ -174,7 +174,7 @@ class WallmateAgent(Agent):
             instructions=base_instructions,
             chat_ctx=chat_ctx,  # 미리 로드한 대화 히스토리
             stt=get_stt(setup_data['user_language']),
-            llm=get_llm(),
+            llm=get_llm("realtime"),
             tts=get_tts(setup_data['voice_name'], setup_data['voice_speed_offset']),
             stf=get_stf(),
         )

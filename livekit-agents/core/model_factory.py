@@ -24,6 +24,8 @@ def get_llm(model_provider: str = "google"):
             return anthropic.LLM(model='claude-sonnet-4-20250514')
         case "google":
             return google.LLM(model='gemini-2.5-flash')
+        case "realtime":
+            return openai.realtime.RealtimeModel(model="gpt-realtime", voice="cedar")
         case _:
             raise ValueError(f"Invalid model provider: {model_provider}")
 

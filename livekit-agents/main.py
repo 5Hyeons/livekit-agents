@@ -165,6 +165,6 @@ if __name__ == "__main__":
             prewarm_fnc=prewarm,
             shutdown_process_timeout= 10.0,
             drain_timeout=15.0,
-            port=8095
+            port=8096
         ),
     )

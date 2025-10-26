@@ -565,14 +565,14 @@ class _ParticipantAnimationOutput(io.AnimationDataOutput):
             attributes=attributes,
         )
 
-    # async def capture_frame(self, data: stf.AnimationData) -> None:
-    #     # WebGL: publish_data() 사용 (Temporal Test Code) 
-    #     await self._room.local_participant.publish_data(
-    #         payload=data.data,  # 208 bytes (52 floats)
-    #         reliable=True,
-    #         destination_identities=[self._participant_identity],
-    #     )
-    #     self._frames_count += 1
+    async def capture_frame_for_webgl(self, data: stf.AnimationData) -> None:
+        # WebGL: publish_data() 사용 (Temporal Test Code) 
+        await self._room.local_participant.publish_data(
+            payload=data.data,  # 208 bytes (52 floats)
+            reliable=True,
+            destination_identities=[self._participant_identity],
+        )
+        self._frames_count += 1
 
     async def capture_frame(self, data: stf.AnimationData) -> None:
         """애니메이션 프레임 데이터를 캡처합니다."""
@@ -581,6 +581,8 @@ class _ParticipantAnimationOutput(io.AnimationDataOutput):
                 "[ANIM_OUTPUT_SIMPLE] 대상 참가자가 없어 애니메이션 데이터를 전송할 수 없습니다."
             )
             return
+
+        await self.capture_frame_for_webgl(data)
 
         if self._flush_atask and not self._flush_atask.done():
             await self._flush_atask
@@ -607,6 +609,8 @@ class _ParticipantAnimationOutput(io.AnimationDataOutput):
             self._frames_count += 1
 
     async def _flush_task(self, writer: rtc.ByteStreamWriter | None):
+        await self.flush_for_webgl()
+
         attributes = {
             ATTRIBUTE_ANIMATION_FINAL: "true",
         }
@@ -622,6 +626,14 @@ class _ParticipantAnimationOutput(io.AnimationDataOutput):
         except Exception as e:
             logger.warning("failed to publish animation data", exc_info=e)
 
+    async def flush_for_webgl(self) -> None:
+        # WebGL: publish_data() 사용 (Temporal Test Code) 
+        await self._room.local_participant.publish_data(
+            payload="final",
+            reliable=True,
+            destination_identities=[self._participant_identity],
+        )
+
     def flush(self) -> None:
         if self._participant_identity is None or not self._capturing:
             return
@@ -632,6 +644,8 @@ class _ParticipantAnimationOutput(io.AnimationDataOutput):
         self._flush_atask = asyncio.create_task(self._flush_task(curr_writer))
 
     async def _clear_buffer_task(self) -> None:
+        await self.clear_buffer_for_webgl()
+        
         attributes = {
             ATTRIBUTE_ANIMATION_INTERRUPTED: "true",
         }
@@ -642,6 +656,13 @@ class _ParticipantAnimationOutput(io.AnimationDataOutput):
         else:
             tmp_writer = await self._create_writer(attributes=attributes)
             await tmp_writer.aclose()
+
+    async def clear_buffer_for_webgl(self) -> None:
+        await self._room.local_participant.publish_data(
+            payload="interrupted",
+            reliable=True,
+            destination_identities=[self._participant_identity],
+        )
 
     def clear_buffer(self) -> None:
         self._capturing = False

@@ -2079,6 +2079,11 @@ class AgentActivity(RecognitionHooks):
             if self._session.output.transcription_enabled
             else None
         )
+        animation_output = (
+            self._session.output.animation
+            if self._session.output.animation_enabled
+            else None
+        )
         tool_ctx = llm.ToolContext(self.tools)
 
         wait_for_authorization = asyncio.ensure_future(speech_handle._wait_for_authorization())
@@ -2175,12 +2180,39 @@ class AgentActivity(RecognitionHooks):
                             )
 
                         if realtime_audio_result is not None:
+                            # Audio tee for STF
+                            audio_tee = utils.aio.itertools.tee(realtime_audio_result, 2)
+                            tees.append(audio_tee)
+                            audio_for_forward, audio_for_stf = audio_tee
+
+                            # STF inference (먼저)
+                            stf_gen_data = None
+                            if animation_output is not None:
+                                stf_task, stf_gen_data = perform_stf_inference(
+                                    node=self._agent.stf_node,
+                                    input=audio_for_stf,
+                                    model_settings=model_settings,
+                                )
+                                tasks.append(stf_task)
+
+                            # 0.5초 딜레이
+                            await asyncio.sleep(0.5)
+
+                            # Audio forwarding (그 다음)
                             forward_task, audio_out = perform_audio_forwarding(
                                 audio_output=audio_output,
-                                tts_output=realtime_audio_result,
+                                tts_output=audio_for_forward,
                             )
                             forward_tasks.append(forward_task)
                             audio_out.first_frame_fut.add_done_callback(_on_first_frame)
+
+                            # Animation forwarding (마지막)
+                            if animation_output is not None and stf_gen_data is not None:
+                                forward_anim_task, anim_out = perform_animation_forwarding(
+                                    animation_output=animation_output,
+                                    stf_output=stf_gen_data.anim_ch
+                                )
+                                forward_tasks.append(forward_anim_task)
 
                     # text output
                     tr_node = self._agent.transcription_node(tr_text_input, model_settings)
@@ -2269,6 +2301,8 @@ class AgentActivity(RecognitionHooks):
                 # there should be only one message
                 msg_gen, text_out, audio_out = message_outputs[0]
                 forwarded_text = text_out.text if text_out else ""
+                if animation_output is not None:
+                    animation_output.clear_buffer()
                 if audio_output is not None:
                     audio_output.clear_buffer()
 
