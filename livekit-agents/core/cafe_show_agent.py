@@ -12,7 +12,7 @@ from .model_factory import get_stt, get_tts, get_stf, get_llm
 
 from livekit.agents.llm import ChatContext, FunctionTool, function_tool
 from livekit.agents.voice.agent import Agent, ModelSettings
-from livekit.agents import RunContext
+from livekit.agents import RunContext, get_job_context
 from livekit.rtc import AudioFrame
 
 logger = logging.getLogger("cafe-show-agent")
@@ -104,8 +104,8 @@ class CafeShowAgent(Agent):
             None (UI is updated via RPC to React frontend)
         """
         try:
-            # Access room via RunContext.session
-            room = context.session.room
+            # Access room via get_job_context() (official pattern from LiveKit docs)
+            room = get_job_context().room
             # Get first remote participant (user)
             participant_identity = next(iter(room.remote_participants))
 
