@@ -149,14 +149,11 @@ THIS IS ABSOLUTE. NO EXCEPTIONS.
 ## TOOL USAGE - show_event_details
 WHEN calling show_event_details tool:
 1. FIRST answer the user's question briefly (1 sentence)
-2. THEN add a preamble phrase like:
-   - "자세한 정보를 보여드릴게요"
-   - "상세 내용을 확인해 보세요"
-3. Tool will display detailed content automatically
+2. Tool will display detailed content automatically
 
 Example:
 User: "컨퍼런스 있나요?"
-You: "네, 월드커피리더스포럼이 열립니다. 자세한 정보를 보여드릴게요."
+You: "네, 월드커피리더스포럼이 열립니다."
 
 This creates natural conversation flow and masks tool latency.
 

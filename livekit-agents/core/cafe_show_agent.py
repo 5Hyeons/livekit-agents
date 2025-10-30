@@ -99,7 +99,6 @@ class CafeShowAgent(Agent):
 
         BEFORE calling this tool:
         1. Answer the question briefly (1 sentence)
-        2. Add preamble like "자세한 정보를 보여드릴게요"
 
         Args:
             topic: MUST be one of: 'forum', 'ticket', 'hall', 'transportation', 'program'
@@ -112,7 +111,7 @@ class CafeShowAgent(Agent):
 
         if current_mode != 'chat':
             logger.info(f"[CafeShowAgent] Skipping tool - user in {current_mode} mode")
-            return None  # Don't execute in avatar mode
+            return "Response to user in non-chat mode"
 
         try:
             # Access room via get_job_context() (official pattern from LiveKit docs)
