@@ -3,6 +3,7 @@ RPC (Remote Procedure Call) handlers for client-agent communication.
 """
 
 import logging
+import json
 from typing import TYPE_CHECKING
 
 from livekit import rtc
@@ -55,6 +56,42 @@ class RPCHandlers:
                 logger.error(f"Error during agent interruption: {e}")
 
         return interrupt_agent
+
+    def create_mode_change_handler(self):
+        """
+        Create user mode change RPC handler.
+
+        Handles notification when user switches between chat and avatar modes.
+        Updates session userdata and optionally interrupts agent.
+
+        Returns:
+            Async function to handle mode change requests
+        """
+
+        async def user_mode_changed(data: rtc.RpcInvocationData) -> None:
+            """Handle user mode change (chat/avatar) notification."""
+            logger.info(f"RPC 'user_mode_changed' called by: {data.caller_identity}")
+
+            try:
+                payload = json.loads(data.payload)
+                mode = payload.get('mode', 'chat')
+                should_interrupt = payload.get('should_interrupt', False)
+
+                # Update session userdata with current mode
+                self.session.userdata['current_mode'] = mode
+                logger.info(f"User mode changed to: {mode}")
+
+                # Interrupt agent if requested
+                if should_interrupt:
+                    await self.session.interrupt()
+                    logger.info("Agent interrupted during mode change")
+
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to parse mode change payload: {e}")
+            except Exception as e:
+                logger.error(f"Error handling mode change: {e}")
+
+        return user_mode_changed
 
     def create_attention_check_handler(self):
         """
@@ -187,6 +224,7 @@ class RPCHandlers:
         """
         # Register RPC methods
         local_participant.register_rpc_method("interrupt_agent", self.create_interrupt_handler())
+        local_participant.register_rpc_method("user_mode_changed", self.create_mode_change_handler())
         local_participant.register_rpc_method(
             "check_attention", self.create_attention_check_handler()
         )

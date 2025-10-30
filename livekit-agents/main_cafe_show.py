@@ -99,16 +99,14 @@ async def entrypoint(ctx: JobContext):
     # 3. Load credits balance
     credits_balance = await api_manager.get_credits_balance(user_identity)
 
-    # 4. Construct userdata
+    # 4. Construct userdata for CafeShow
     user_profile = {
         "user_id": user_identity,
         "thread_id": thread_identity,
         "scene_id": setup_data["scene_name"],
         "name": user_profile.get("name", "Unknown"),
-        "credit_info": {
-            **credits_balance,
-            "credit_to_deduct": 0  # Session usage accumulator
-        }
+        "current_mode": "chat",  # Default mode: chat (user can see MD details)
+        "credits_balance": credits_balance,  # For reference only
     }
 
     # Create agent instance

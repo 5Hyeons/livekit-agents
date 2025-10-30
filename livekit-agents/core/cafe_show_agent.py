@@ -83,7 +83,11 @@ class CafeShowAgent(Agent):
     ) -> str:
         """Show detailed event information in the chat interface.
 
+        ONLY USE when user is in CHAT mode (not avatar mode).
+        In avatar mode, answer verbally with full details instead.
+
         WHEN TO USE THIS TOOL:
+        - User is in CHAT mode (can see text details)
         - User asks about FORUM, CONFERENCE, SEMINAR
         - User asks about TICKETS, PRICING, BOOKING, REFUND
         - User asks about HALL layout, EXHIBITION structure
@@ -93,9 +97,9 @@ class CafeShowAgent(Agent):
         DO NOT USE for simple yes/no questions or basic info.
         USE ONLY when user needs DETAILED explanation.
 
-        BEFORE calling this tool, SAY a preamble like:
-        - "자세한 정보를 보여드릴게요"
-        - "상세 내용을 확인해 보세요"
+        BEFORE calling this tool:
+        1. Answer the question briefly (1 sentence)
+        2. Add preamble like "자세한 정보를 보여드릴게요"
 
         Args:
             topic: MUST be one of: 'forum', 'ticket', 'hall', 'transportation', 'program'
@@ -103,6 +107,13 @@ class CafeShowAgent(Agent):
         Returns:
             None (UI is updated via RPC to React frontend)
         """
+        # Check if user is in chat mode (can see MD details)
+        current_mode = context.userdata.get('current_mode', 'chat')
+
+        if current_mode != 'chat':
+            logger.info(f"[CafeShowAgent] Skipping tool - user in {current_mode} mode")
+            return None  # Don't execute in avatar mode
+
         try:
             # Access room via get_job_context() (official pattern from LiveKit docs)
             room = get_job_context().room
