@@ -2063,6 +2063,8 @@ class AgentActivity(RecognitionHooks):
         model_settings: ModelSettings,
         instructions: str | None = None,
     ) -> None:
+        self._session._update_agent_state("thinking")
+
         current_span = trace.get_current_span()
         current_span.set_attribute(trace_types.ATTR_SPEECH_ID, speech_handle.id)
 
@@ -2196,7 +2198,7 @@ class AgentActivity(RecognitionHooks):
                                 tasks.append(stf_task)
 
                             # 0.5초 딜레이
-                            await asyncio.sleep(0.5)
+                            await asyncio.sleep(0.6)
 
                             # Audio forwarding (그 다음)
                             forward_task, audio_out = perform_audio_forwarding(
