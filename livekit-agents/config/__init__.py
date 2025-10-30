@@ -1,7 +1,7 @@
 """Configuration package for LiveKit agents."""
 
 # Persona configuration
-from .personas import create_wallmate_instructions, create_cafeshow_instructions
+from .personas import create_wallmate_instructions, create_cafe_show_instructions
 
 # Voice configuration
 from .voices import VoiceSettings, ElevenLabsConfig
@@ -22,7 +22,7 @@ from .logging import (
 
 __all__ = [
     # Persona
-    'create_wallmate_instructions', 'create_cafeshow_instructions',
+    'create_wallmate_instructions', 'create_cafe_show_instructions',
     
     # Voice
     'VoiceSettings', 'ElevenLabsConfig',

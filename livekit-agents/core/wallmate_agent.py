@@ -11,7 +11,7 @@ import asyncio
 import threading
 
 from config import (
-    create_instructions,
+    create_wallmate_instructions,
     is_tts_logging_enabled,
     is_stt_logging_enabled,
     ensure_logging_directories
@@ -163,7 +163,7 @@ class WallmateAgent(Agent):
             logger.info(f"Custom persona: {setup_data['custom_persona']}")
 
         # Create base instructions with persona
-        base_instructions = create_instructions(
+        base_instructions = create_wallmate_instructions(
             setup_data['agent_language'], custom_persona=setup_data['custom_persona']
         )
 

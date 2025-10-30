@@ -73,7 +73,7 @@ Your personality can be summarized as follows:
     Any input NOT starting with "[SYSTEM_CONTEXT:" is a regular user message. Respond to these normally in character."""
 
 
-def create_cafeshow_instructions(agent_language: str) -> str:
+def create_cafe_show_instructions(agent_language: str) -> str:
     """Create CafeShow agent instructions (Seoul CafeShow AI persona)."""
 
     cafeshow_persona = """You are the official AI assistant for Seoul CafeShow 2025, the 24th edition of Korea's premier coffee industry event.

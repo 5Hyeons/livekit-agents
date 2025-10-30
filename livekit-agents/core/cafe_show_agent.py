@@ -53,7 +53,7 @@ class CafeShowAgent(Agent):
 
         # Create base instructions with persona
         base_instructions = create_cafe_show_instructions(
-            setup_data['agent_language'], custom_persona=setup_data['custom_persona']
+            setup_data['user_language']
         )
 
         logger.info(f"Using REST API for memory management (loaded {len(chat_ctx.items)} messages)")
