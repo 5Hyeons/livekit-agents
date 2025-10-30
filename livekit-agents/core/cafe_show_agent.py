@@ -5,7 +5,7 @@ CafeShowAgent class for LiveKit voice AI agents with face animation support.
 import logging
 
 from config import (
-    create_instructions,
+    create_cafe_show_instructions,
 )
 from .model_factory import get_stt, get_tts, get_stf, get_llm
 
@@ -52,7 +52,7 @@ class CafeShowAgent(Agent):
             logger.info(f"Custom persona: {setup_data['custom_persona']}")
 
         # Create base instructions with persona
-        base_instructions = create_instructions(
+        base_instructions = create_cafe_show_instructions(
             setup_data['agent_language'], custom_persona=setup_data['custom_persona']
         )
 
@@ -62,9 +62,7 @@ class CafeShowAgent(Agent):
         super().__init__(
             instructions=base_instructions,
             chat_ctx=chat_ctx,  # 미리 로드한 대화 히스토리
-            stt=get_stt(setup_data['user_language']),
             llm=get_llm("realtime"),
-            tts=get_tts(setup_data['voice_name'], setup_data['voice_speed_offset']),
             stf=get_stf(),
         )
 
