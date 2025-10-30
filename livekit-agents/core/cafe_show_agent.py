@@ -3,6 +3,7 @@ CafeShowAgent class for LiveKit voice AI agents with face animation support.
 """
 
 import logging
+import json
 
 from config import (
     create_cafe_show_instructions,
@@ -11,6 +12,7 @@ from .model_factory import get_stt, get_tts, get_stf, get_llm
 
 from livekit.agents.llm import ChatContext, FunctionTool, function_tool
 from livekit.agents.voice.agent import Agent, ModelSettings
+from livekit.agents import RunContext
 from livekit.rtc import AudioFrame
 
 logger = logging.getLogger("cafe-show-agent")
@@ -71,4 +73,53 @@ class CafeShowAgent(Agent):
         Handle agent entry into conversation session.
         Memory is already loaded in main.py and injected into chat_ctx.
         """
-        logger.info(f"Cafe Show eAgent entering session for user: {self.userdata['user_id']}")
+        logger.info(f"Cafe Show Agent entering session for user: {self.userdata['user_id']}")
+
+    @function_tool()
+    async def show_event_details(
+        self,
+        context: RunContext,
+        topic: str,
+    ) -> str:
+        """Show detailed event information in the chat interface.
+
+        WHEN TO USE THIS TOOL:
+        - User asks about FORUM, CONFERENCE, SEMINAR
+        - User asks about TICKETS, PRICING, BOOKING, REFUND
+        - User asks about HALL layout, EXHIBITION structure
+        - User asks about TRANSPORTATION, PARKING, SUBWAY
+        - User asks about PROGRAMS, SCHEDULE details
+
+        DO NOT USE for simple yes/no questions or basic info.
+        USE ONLY when user needs DETAILED explanation.
+
+        BEFORE calling this tool, SAY a preamble like:
+        - "자세한 정보를 보여드릴게요"
+        - "상세 내용을 확인해 보세요"
+
+        Args:
+            topic: MUST be one of: 'forum', 'ticket', 'hall', 'transportation', 'program'
+
+        Returns:
+            None (UI is updated via RPC to React frontend)
+        """
+        try:
+            # Access room via RunContext.session
+            room = context.session.room
+            # Get first remote participant (user)
+            participant_identity = next(iter(room.remote_participants))
+
+            # Send RPC to React frontend (ChatView will handle display)
+            await room.local_participant.perform_rpc(
+                destination_identity=participant_identity,
+                method="show_event_details",
+                payload=json.dumps({"topic": topic}),
+                response_timeout=2.0,
+            )
+
+            logger.info(f"[CafeShowAgent] Sent detail view RPC for topic: {topic}")
+            return None  # Silent completion (UI already updated)
+
+        except Exception as e:
+            logger.error(f"[CafeShowAgent] Failed to send detail RPC: {e}")
+            return None  # Silent failure (don't confuse LLM)
