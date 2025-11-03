@@ -83,35 +83,25 @@ class CafeShowAgent(Agent):
     ) -> str:
         """Show detailed event information in the chat interface.
 
-        ONLY USE when user is in CHAT mode (not avatar mode).
-        In avatar mode, answer verbally with full details instead.
-
         WHEN TO USE THIS TOOL:
-        - User is in CHAT mode (can see text details)
         - User asks about FORUM, CONFERENCE, SEMINAR
         - User asks about TICKETS, PRICING, BOOKING, REFUND
         - User asks about HALL layout, EXHIBITION structure
         - User asks about TRANSPORTATION, PARKING, SUBWAY
         - User asks about PROGRAMS, SCHEDULE details
 
-        DO NOT USE for simple yes/no questions or basic info.
-        USE ONLY when user needs DETAILED explanation.
-
-        BEFORE calling this tool:
-        1. Answer the question briefly (1 sentence)
-
         Args:
             topic: MUST be one of: 'forum', 'ticket', 'hall', 'transportation', 'program'
 
         Returns:
-            None (UI is updated via RPC to React frontend)
+            A string to indicate the result of the tool call
         """
         # Check if user is in chat mode (can see MD details)
         current_mode = context.userdata.get('current_mode', 'chat')
 
         if current_mode != 'chat':
             logger.info(f"[CafeShowAgent] Skipping tool - user in {current_mode} mode")
-            return "Response to user in non-chat mode"
+            return "Response detailed content to the user."
 
         try:
             # Access room via get_job_context() (official pattern from LiveKit docs)
@@ -128,7 +118,7 @@ class CafeShowAgent(Agent):
             )
 
             logger.info(f"[CafeShowAgent] Sent detail view RPC for topic: {topic}")
-            return None  # Silent completion (UI already updated)
+            return "Answer the question very briefly. The React RPC will handle the detailed content."  # Silent completion (UI already updated)
 
         except Exception as e:
             logger.error(f"[CafeShowAgent] Failed to send detail RPC: {e}")

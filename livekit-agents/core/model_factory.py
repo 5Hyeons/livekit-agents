@@ -25,7 +25,7 @@ def get_llm(model_provider: str = "google"):
         case "google":
             return google.LLM(model='gemini-2.5-flash')
         case "realtime":
-            return openai.realtime.RealtimeModel(model="gpt-realtime", voice="cedar")
+            return openai.realtime.RealtimeModel(model="gpt-realtime", voice="Sage")
         case _:
             raise ValueError(f"Invalid model provider: {model_provider}")
 
@@ -38,6 +38,6 @@ def get_tts(voice_name: str = "FEMALE_1", voice_speed_offset: float = 0.0):
 def get_stf():
     """Get FaceAnimator STF configuration."""
     return FaceAnimator(
-        chunk_duration_sec=2.0, 
+        chunk_duration_sec=1.0, 
         output_mode=OutputMode.ANIMATION_ONLY
     )
