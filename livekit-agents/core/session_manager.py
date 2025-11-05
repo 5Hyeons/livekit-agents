@@ -16,13 +16,8 @@ logger = logging.getLogger("session-manager")
 def parse_metadata(participant: rtc.RemoteParticipant) -> Dict[str, Any]:
     """Parse participant metadata with defaults."""
     defaults = {
-        'user_language': 'ko',
-        'agent_language': 'ko',
-        'custom_persona': '',
-        'voice_name': 'FEMALE_1',
-        'voice_speed_offset': 0.0,
-        'model_name': 'gpt', 
-        'scene_name': 'default_scene'
+        'language': 'ko',
+        'docentId': 'None'
     }
     
     if not participant.metadata:
@@ -31,13 +26,8 @@ def parse_metadata(participant: rtc.RemoteParticipant) -> Dict[str, Any]:
     try:
         metadata = json.loads(participant.metadata)
         return {
-            'user_language': validate_language(metadata.get('userLanguage', 'ko')),
-            'agent_language': validate_language(metadata.get('agentLanguage', 'ko')),
-            'custom_persona': metadata.get('customPersona', '').strip(),
-            'voice_name': metadata.get('voiceName', 'FEMALE_1').strip() or 'FEMALE_1',
-            'voice_speed_offset': metadata.get('voiceSpeedOffset', 0.0),
-            'model_name': metadata.get('modelName', 'gemini').strip() or 'gemini',
-            'scene_name': metadata.get('sceneName', 'default_scene').strip() or 'default_scene'
+            'language': metadata.get('language', 'ko'),
+            'docentId': metadata.get('docentId', 'None')
         }
     except (json.JSONDecodeError, Exception) as e:
         logger.warning(f"Metadata parsing error: {e}, using defaults")
@@ -71,21 +61,12 @@ def setup_session(participant: rtc.RemoteParticipant) -> Dict[str, Any]:
     # Create room options
     room_input, room_output = create_room_options(participant)
     
-    logger.info(f"Session setup complete - Language: {config['user_language']}, "
-               f"Voice: {config['voice_name']}, "
-               f"Voice speed offset: {config['voice_speed_offset']}, "
-               f"Model: {config['model_name']}, "
-               f"Scene: {config['scene_name']}, "
-               f"Custom persona: {'yes' if config['custom_persona'] else 'no'}")
+    logger.info(f"Session setup complete - Language: {config['language']}, "
+               f"Docent ID: {config['docentId']}")
     
     return {
-        'user_language': config['user_language'],
-        'agent_language': config['agent_language'],
-        'custom_persona': config['custom_persona'],
-        'voice_name': config['voice_name'],
-        'voice_speed_offset': config['voice_speed_offset'],
-        'model_name': config['model_name'],
-        'scene_name': config['scene_name'],
+        'language': config['language'],
+        'docentId': config['docentId'],
         'room_input_options': room_input,
         'room_output_options': room_output
     }

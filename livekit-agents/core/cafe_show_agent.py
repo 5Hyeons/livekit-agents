@@ -35,7 +35,6 @@ class CafeShowAgent(Agent):
         self,
         user_data: dict,
         setup_data: dict,
-        chat_ctx: ChatContext,  # Pre-loaded conversation history
         api_manager,  # RestAPIManager instance
     ):
         """
@@ -44,26 +43,21 @@ class CafeShowAgent(Agent):
         Args:
             user_data: User data including user_id, thread_id, name, credit_info
             setup_data: Setup data containing language, persona, voice, model, scene
-            chat_ctx: Pre-loaded ChatContext with conversation history
             api_manager: RestAPIManager for database operations via REST API
         """
         self.userdata = user_data
         self.api_manager = api_manager
 
-        if setup_data['custom_persona']:
-            logger.info(f"Custom persona: {setup_data['custom_persona']}")
-
         # Create base instructions with persona
         base_instructions = create_cafe_show_instructions(
-            setup_data['user_language']
+            setup_data['language'],
+            setup_data['docentId']
         )
 
-        logger.info(f"Using REST API for memory management (loaded {len(chat_ctx.items)} messages)")
 
         # Initialize parent Agent with pre-loaded chat context
         super().__init__(
             instructions=base_instructions,
-            chat_ctx=chat_ctx,  # 미리 로드한 대화 히스토리
             llm=get_llm("realtime"),
             stf=get_stf(),
         )
@@ -71,7 +65,6 @@ class CafeShowAgent(Agent):
     async def on_enter(self):
         """
         Handle agent entry into conversation session.
-        Memory is already loaded in main.py and injected into chat_ctx.
         """
         logger.info(f"Cafe Show Agent entering session for user: {self.userdata['user_id']}")
 
@@ -88,20 +81,31 @@ class CafeShowAgent(Agent):
         - User asks about TICKETS, PRICING, BOOKING, REFUND
         - User asks about HALL layout, EXHIBITION structure
         - User asks about TRANSPORTATION, PARKING, SUBWAY
-        - User asks about PROGRAMS, SCHEDULE details
+        - User asks about PROGRAMS, SCHEDULE
+        
+        USER INPUT EXAMPLES:
+        USER: 입장 절차 알려줘.
+        USER: 티켓 예매는 어떻게 해?
+        USER: 오늘 프로그램 알려줘.
+        USER: 오늘 스케줄 알려줘.
+        USER: 지금 행사 하는거 있어?
+        USER: 주차는 어떻게 하는거야?
+        USER: 주요 프로그램
+        USER: 티켓 가격
+        USER: 주차
 
         Args:
             topic: MUST be one of: 'forum', 'ticket', 'hall', 'transportation', 'program'
 
         Returns:
-            A string to indicate the result of the tool call
+            None or a string to indicate the result of the tool call
         """
         # Check if user is in chat mode (can see MD details)
         current_mode = context.userdata.get('current_mode', 'chat')
 
         if current_mode != 'chat':
             logger.info(f"[CafeShowAgent] Skipping tool - user in {current_mode} mode")
-            return "Response detailed content to the user."
+            return "[SYSTEM_CONTEXT: Provide detailed, helpful guidance to the user in a friendly conversational manner.]"
 
         try:
             # Access room via get_job_context() (official pattern from LiveKit docs)
@@ -118,7 +122,7 @@ class CafeShowAgent(Agent):
             )
 
             logger.info(f"[CafeShowAgent] Sent detail view RPC for topic: {topic}")
-            return "Answer the question very briefly. The React RPC will handle the detailed content."  # Silent completion (UI already updated)
+            return None  # Silent completion (UI already updated)
 
         except Exception as e:
             logger.error(f"[CafeShowAgent] Failed to send detail RPC: {e}")

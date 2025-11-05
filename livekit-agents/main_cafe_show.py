@@ -88,32 +88,17 @@ async def entrypoint(ctx: JobContext):
 
     # Get identity information
     user_identity = participant.identity
-    thread_identity = f"{setup_data['scene_name']}_user-{user_identity}"
-
-    # 1. Load user profile (장기 메모리) - 없으면 자동 생성
-    user_profile = await api_manager.get_user_profile(thread_identity, user_id=user_identity, auto_create=True)
-
-    # 2. Load conversation history (단기 메모리)
-    chat_ctx = await api_manager.get_conversation(thread_identity, limit=50)
-
-    # 3. Load credits balance
-    credits_balance = await api_manager.get_credits_balance(user_identity)
 
     # 4. Construct userdata for CafeShow
     user_profile = {
         "user_id": user_identity,
-        "thread_id": thread_identity,
-        "scene_id": setup_data["scene_name"],
-        "name": user_profile.get("name", "Unknown"),
-        "current_mode": "chat",  # Default mode: chat (user can see MD details)
-        "credits_balance": credits_balance,  # For reference only
+        "current_mode": "avatar",  # Default mode: chat (user can see MD details)
     }
 
     # Create agent instance
     agent = CafeShowAgent(
         user_data=user_profile,
         setup_data=setup_data,
-        chat_ctx=chat_ctx,  # 미리 로드한 대화 히스토리 주입!
         api_manager=api_manager  # RestAPIManager 전달
     )
 

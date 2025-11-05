@@ -25,7 +25,7 @@ def get_llm(model_provider: str = "google"):
         case "google":
             return google.LLM(model='gemini-2.5-flash')
         case "realtime":
-            return openai.realtime.RealtimeModel(model="gpt-realtime", voice="Sage")
+            return openai.realtime.RealtimeModel(model="gpt-realtime", voice="Ash")
         case _:
             raise ValueError(f"Invalid model provider: {model_provider}")
 
