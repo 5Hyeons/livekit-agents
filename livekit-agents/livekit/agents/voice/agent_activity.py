@@ -1916,7 +1916,9 @@ class AgentActivity(RecognitionHooks):
             self._session._update_agent_state("listening")
 
         await text_tee.aclose()
-        await audio_tee.aclose()
+        # Only close audio_tee if it was created (when audio or animation output is enabled)
+        if audio_output is not None or animation_output is not None:
+            await audio_tee.aclose()
 
         speech_handle._mark_generation_done()  # mark the playout done before waiting for the tool execution  # noqa: E501
         self._background_speeches.add(speech_handle)

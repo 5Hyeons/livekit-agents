@@ -9,6 +9,10 @@ from typing import TYPE_CHECKING
 from livekit import rtc
 from livekit.agents.voice.agent_session import AgentSession
 
+# Import agent classes for handoff
+from core.avatar_mode_agent import AvatarModeAgent
+from core.chat_mode_agent import ChatModeAgent
+
 if TYPE_CHECKING:
     pass
 
@@ -59,17 +63,19 @@ class RPCHandlers:
 
     def create_mode_change_handler(self):
         """
-        Create user mode change RPC handler.
+        Create user mode change RPC handler with agent handoff.
 
         Handles notification when user switches between chat and avatar modes.
-        Updates session userdata and optionally interrupts agent.
+        Performs agent handoff to switch between:
+        - AvatarModeAgent (realtime voice) for avatar mode
+        - ChatModeAgent (text-only) for chat mode
 
         Returns:
             Async function to handle mode change requests
         """
 
         async def user_mode_changed(data: rtc.RpcInvocationData) -> None:
-            """Handle user mode change (chat/avatar) notification."""
+            """Handle user mode change with agent handoff."""
             logger.info(f"RPC 'user_mode_changed' called by: {data.caller_identity}")
 
             try:
@@ -77,9 +83,48 @@ class RPCHandlers:
                 mode = payload.get('mode', 'chat')
                 should_interrupt = payload.get('should_interrupt', False)
 
-                # Update session userdata with current mode
+                # Get current agent and chat context
+                current_agent = self.session.current_agent
+                current_chat_ctx = current_agent.chat_ctx  # Read-only view
+
+                # Get required data from userdata for agent recreation
+                user_data = self.session.userdata.get('user_data')
+                setup_data = self.session.userdata.get('setup_data')
+                api_manager = self.session.userdata.get('api_manager')
+
+                # Create appropriate agent based on mode
+                if mode == 'avatar':
+                    logger.info("Switching to AvatarModeAgent (realtime voice)")
+                    new_agent = AvatarModeAgent(
+                        user_data=user_data,
+                        setup_data=setup_data,
+                        api_manager=api_manager,
+                        chat_ctx=current_chat_ctx  # Auto-copied by Agent constructor
+                    )
+                    # Enable audio and animation output for avatar mode
+                    self.session.output.set_audio_enabled(True)
+                    self.session.output.set_animation_enabled(True)
+                    logger.info("Audio and animation output enabled")
+
+                else:  # 'chat' mode
+                    logger.info("Switching to ChatModeAgent (text-only)")
+                    new_agent = ChatModeAgent(
+                        user_data=user_data,
+                        setup_data=setup_data,
+                        api_manager=api_manager,
+                        chat_ctx=current_chat_ctx  # Auto-copied by Agent constructor
+                    )
+                    # Disable audio and animation output for chat mode (text-only)
+                    self.session.output.set_audio_enabled(False)
+                    self.session.output.set_animation_enabled(False)
+                    logger.info("Audio and animation output disabled (text-only mode)")
+
+                # Update session userdata
                 self.session.userdata['current_mode'] = mode
-                logger.info(f"User mode changed to: {mode}")
+
+                # Perform agent handoff
+                self.session.update_agent(new_agent)
+                logger.info(f"Agent handoff complete to {mode} mode")
 
                 # Interrupt agent if requested
                 if should_interrupt:
@@ -89,7 +134,7 @@ class RPCHandlers:
             except json.JSONDecodeError as e:
                 logger.error(f"Failed to parse mode change payload: {e}")
             except Exception as e:
-                logger.error(f"Error handling mode change: {e}")
+                logger.error(f"Error during agent handoff: {e}", exc_info=True)
 
         return user_mode_changed
 

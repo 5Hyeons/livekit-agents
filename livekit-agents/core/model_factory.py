@@ -18,14 +18,18 @@ def get_stt(language: str = "ko"):
 def get_llm(model_provider: str = "google"):
     """Get LLM configuration."""
     match model_provider:
+        case "chat":
+            # Chat mode - text-only agent with Gemini 2.5 Flash
+            return google.LLM(model='gemini-2.5-flash')
+        case "realtime":
+            # Avatar mode - realtime voice agent with OpenAI Realtime API
+            return openai.realtime.RealtimeModel(model="gpt-realtime", voice="Ash")
         case "openai":
             return openai.LLM(model='gpt-4o')
         case "anthropic":
             return anthropic.LLM(model='claude-sonnet-4-20250514')
         case "google":
             return google.LLM(model='gemini-2.5-flash')
-        case "realtime":
-            return openai.realtime.RealtimeModel(model="gpt-realtime", voice="Ash")
         case _:
             raise ValueError(f"Invalid model provider: {model_provider}")
 

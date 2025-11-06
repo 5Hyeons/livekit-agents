@@ -26,7 +26,7 @@ from livekit.agents import (
 from livekit.agents.voice.agent_session import AgentSession
 from livekit.plugins import silero
 
-from core.cafe_show_agent import CafeShowAgent
+from core.avatar_mode_agent import AvatarModeAgent
 from core.session_manager import setup_session
 from core.rest_api_manager import RestAPIManager
 from handlers.event_handlers import SessionEventHandlers
@@ -89,24 +89,35 @@ async def entrypoint(ctx: JobContext):
     # Get identity information
     user_identity = participant.identity
 
-    # 4. Construct userdata for CafeShow
+    # Construct user profile
     user_profile = {
         "user_id": user_identity,
-        "current_mode": "avatar",  # Default mode: chat (user can see MD details)
+        "current_mode": "avatar",  # Default mode: avatar (voice)
     }
 
-    # Create agent instance
-    agent = CafeShowAgent(
+    # Construct session userdata with data needed for agent handoff
+    session_userdata = {
+        "user_id": user_identity,
+        "current_mode": "avatar",  # Default mode: avatar (voice)
+        # Required for agent recreation during handoff
+        "user_data": user_profile,
+        "setup_data": setup_data,
+        "api_manager": api_manager
+    }
+
+    # Create initial agent (AvatarModeAgent by default)
+    agent = AvatarModeAgent(
         user_data=user_profile,
         setup_data=setup_data,
         api_manager=api_manager  # RestAPIManager 전달
+        # chat_ctx=None (fresh start)
     )
 
     # Create agent session
     session = AgentSession(
         vad=ctx.proc.userdata["vad"],
         preemptive_generation=False,
-        userdata=user_profile
+        userdata=session_userdata  # Store handoff data here
     )
 
     # Create usage collector for metrics
