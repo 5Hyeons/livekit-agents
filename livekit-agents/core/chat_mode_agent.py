@@ -69,11 +69,7 @@ class ChatModeAgent(Agent):
         Handle agent entry into conversation session.
         """
         logger.info(f"Chat Mode Agent entering session for user: {self.userdata['user_id']}")
-        if self.setup_data['docentId'] == 'None':
-            system_context = "[SYSTEM_CONTEXT: First-time visitor. Welcome them briefly as CafeShow 2025 official AI (1-2 sentences).]"
-        else:
-            system_context = "[SYSTEM_CONTEXT: First-time visitor. Give a brief introduction (1-2 sentences) mentioning your company name and booth number.]"
-        self.session.generate_reply(user_input=system_context)
+        
 
     @function_tool()
     async def show_event_details(

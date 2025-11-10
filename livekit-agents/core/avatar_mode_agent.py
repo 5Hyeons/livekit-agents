@@ -8,8 +8,8 @@ It does NOT include show_event_details tool as avatar mode doesn't display markd
 import logging
 
 from config import create_cafe_show_instructions
-from .model_factory import get_llm, get_stf
-
+from .model_factory import get_stf
+from livekit.plugins import openai
 from livekit.agents.voice.agent import Agent
 
 logger = logging.getLogger("avatar-mode-agent")
@@ -53,10 +53,26 @@ class AvatarModeAgent(Agent):
         )
         logger.info(f"AvatarModeAgent initialized for docent: {setup_data['docentId']}")
 
+        # Select voice based on docent mode
+        if setup_data['docentId'] != 'None':
+            # Docent mode - male voice
+            voice = "cedar"
+            logger.info(f"Docent mode: Using male voice 'cedar'")
+        else:
+            # General AI mode - female voice
+            voice = "sage"
+            logger.info(f"General AI mode: Using female voice 'ash'")
+
+        # Create realtime model with selected voice
+        llm = openai.realtime.RealtimeModel(
+            model="gpt-realtime",
+            voice=voice
+        )
+
         # Initialize parent Agent with realtime model
         super().__init__(
             instructions=base_instructions,
-            llm=get_llm("realtime"),  # OpenAI Realtime API
+            llm=llm,  # OpenAI Realtime API with selected voice
             stf=get_stf(),  # Face animation
             chat_ctx=chat_ctx  # Auto-copied by Agent constructor
         )
