@@ -86,7 +86,7 @@ class AvatarModeAgent(Agent):
             system_context = "[SYSTEM_CONTEXT: First-time visitor. Welcome them briefly as CafeShow 2025 official AI (1-2 sentences).]"
         else:
             system_context = "[SYSTEM_CONTEXT: First-time visitor. Give a brief introduction (1-2 sentences) mentioning your company name and booth number.]"
-        self.session.generate_reply(user_input=system_context)
+        self.session.generate_reply(user_input=system_context, allow_interruptions=False)
 
     # NO show_event_details tool here!
     # Avatar mode doesn't display markdown details in UI
