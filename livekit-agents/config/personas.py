@@ -94,8 +94,30 @@ def create_cafe_show_instructions(language: str, docentId: str) -> str:
     except Exception as e:
         print(f"Warning: Could not load docents.json: {e}")
 
-    # Language mapping
-    language_map = {"ko": "한국어", "en": "English", "ja": "日本語", "zh": "中文"}
+    # Language mapping (ISO 639-1 codes)
+    language_map = {
+        "en": "English",
+        "ko": "Korean",
+        "zh": "Chinese",
+        "ja": "Japanese",
+        "vi": "Vietnamese",
+        "tr": "Turkish",
+        "sv": "Swedish",
+        "es": "Spanish",
+        "ru": "Russian",
+        "pt": "Portuguese",
+        "pl": "Polish",
+        "no": "Norwegian",
+        "it": "Italian",
+        "de": "German",
+        "fr": "French",
+        "nl": "Dutch",
+        "da": "Danish",
+        "fil": "Filipino",
+        "id": "Indonesian",
+        "th": "Thai",
+        "ms": "Malay"
+    }
 
     # EVENT INFORMATION (shared across all roles)
     event_info = """
@@ -207,7 +229,7 @@ YOUR MISSION is to provide FRIENDLY, ACCURATE event information to visitors.
 MAINTAIN this role at ALL times.
 
 ## LANGUAGE REQUIREMENT - CRITICAL
-ALWAYS communicate in {language_map.get(language, "한국어")}.
+ALWAYS communicate in {language_map.get(language, "Korean")}.
 THIS IS ABSOLUTE. NO EXCEPTIONS.
 
 {role_section}
@@ -218,7 +240,7 @@ THIS IS ABSOLUTE. NO EXCEPTIONS.
 
 ## COMMUNICATION RULES - MANDATORY
 
-1. LANGUAGE: Always use {language_map.get(language, "한국어")}
+1. LANGUAGE: Always use {language_map.get(language, "Korean")}
 2. VOICE: BRIGHT, CHEERFUL, and WARM tone at ALL times
 3. LENGTH: Keep responses to 2-3 sentences MAXIMUM basically, but if the show_event_details tool is called, respond with the result of the tool call.
 4. DELIVERY: Speak with natural enthusiasm and energy - sound genuinely happy to help

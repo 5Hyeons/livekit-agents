@@ -138,6 +138,78 @@ class RPCHandlers:
 
         return user_mode_changed
 
+    def create_language_change_handler(self):
+        """
+        Create language change RPC handler.
+
+        Handles notification when user switches language.
+        Updates agent instructions with new language and clears chat history
+        to provide a fresh start in the new language.
+
+        Returns:
+            Async function to handle language change requests
+        """
+
+        async def user_language_changed(data: rtc.RpcInvocationData) -> str:
+            """Handle user language change with instruction update and history clear."""
+            logger.info(f"RPC 'user_language_changed' called by: {data.caller_identity}")
+
+            try:
+                payload = json.loads(data.payload)
+                new_language = payload.get('language', 'ko')  # ISO language code
+
+                # Get current agent
+                current_agent = self.session.current_agent
+                current_chat_ctx = current_agent.chat_ctx
+
+                # Get required data from userdata
+                setup_data = self.session.userdata.get('setup_data')
+                docent_id = setup_data.get('docentId', '')
+
+                # Update setup_data with new language
+                setup_data['language'] = new_language
+                logger.info(f"Language changed to: {new_language}")
+
+                # Recreate instructions with new language
+                from config.personas import create_cafe_show_instructions
+                new_instructions = create_cafe_show_instructions(new_language, docent_id)
+
+                # Clear chat history while preserving system message
+                system_message = None
+                for item in current_chat_ctx.items:
+                    if (item.type == "message" and
+                        hasattr(item, 'role') and
+                        item.role in ["system", "developer"]):
+                        system_message = item
+                        break
+
+                # Create new context with only system message
+                from livekit.agents.llm import ChatContext
+                new_chat_ctx = ChatContext.empty()
+                if system_message:
+                    new_chat_ctx.items.append(system_message)
+                logger.info("Chat history cleared (system message preserved)")
+
+                # Update agent instructions and chat context
+                await current_agent.update_instructions(new_instructions)
+                await current_agent.update_chat_ctx(new_chat_ctx)
+                logger.info("Agent instructions and chat context updated")
+
+                # Always interrupt agent during language change
+                await self.session.interrupt()
+                logger.info("Agent interrupted for language change")
+
+                return json.dumps({"status": "success", "language": new_language})
+
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to parse language change payload: {e}")
+                return json.dumps({"status": "error", "message": "Invalid JSON payload"})
+            except Exception as e:
+                logger.error(f"Error during language change: {e}", exc_info=True)
+                return json.dumps({"status": "error", "message": str(e)})
+
+        return user_language_changed
+
     def create_attention_check_handler(self):
         """
         Create attention check RPC handler for inactive users.
@@ -270,6 +342,7 @@ class RPCHandlers:
         # Register RPC methods
         local_participant.register_rpc_method("interrupt_agent", self.create_interrupt_handler())
         local_participant.register_rpc_method("user_mode_changed", self.create_mode_change_handler())
+        local_participant.register_rpc_method("user_language_changed", self.create_language_change_handler())
         local_participant.register_rpc_method(
             "check_attention", self.create_attention_check_handler()
         )
@@ -280,4 +353,4 @@ class RPCHandlers:
         #     "clear_chat_history", self.create_clear_chat_history_handler()
         # )
 
-        logger.info("RPC methods registered: interrupt_agent, check_attention, send_text_input, clear_chat_history")
+        logger.info("RPC methods registered: interrupt_agent, user_mode_changed, user_language_changed, check_attention, send_text_input")
